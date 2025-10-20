@@ -14,6 +14,14 @@ const char* password = "12345678";
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 
+// LED Flash pin for ESP32-CAM
+#define LED_FLASH 4
+
+// Calibration and line detection parameters
+int binaryThreshold = 128; // Auto-calibrated threshold for 1-bit conversion
+bool invertColors = false; // false = black line on white, true = white line on black
+int lineCenterX = -1; // Detected line center X position (-1 if not detected)
+
 // Camera pins for AI-Thinker ESP32-CAM
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -36,37 +44,22 @@ AsyncWebServer server(80);
 camera_config_t camera_config;
 sensor_t * s = NULL;
 
-// Current camera settings for line detection
+// Simple camera settings for minimal grayscale capture
 struct CameraSettings {
-  int framesize = 7;  // FRAMESIZE_VGA (640x480) - good balance
-  int quality = 10;    // 0-63, lower is better quality
+  int framesize = 5;   // FRAMESIZE_QVGA (320x240) - minimal for fast processing
   int brightness = 0;  // -2 to 2
-  int contrast = 0;    // -2 to 2
-  int saturation = -2; // -2 to 2, lower for better B&W line detection
-  int sharpness = 0;   // -2 to 2
-  int denoise = 0;     // 0-8
-  int special_effect = 2; // 0: No effect, 2: Grayscale (best for line detection)
-  int wb_mode = 0;     // 0: Auto, 1: Sunny, 2: Cloudy, 3: Office, 4: Home
-  int awb = 1;         // Auto white balance
-  int awb_gain = 1;    // Auto white balance gain
-  int aec = 1;         // Auto exposure control
-  int aec2 = 1;        // Auto exposure control 2
+  int contrast = 2;    // -2 to 2, maximum contrast for line detection
+  int saturation = -2; // -2 to 2, lowest for B&W
+  int sharpness = 2;   // -2 to 2, maximum sharpness
   int ae_level = 0;    // -2 to 2
-  int aec_value = 300; // 0-1200
-  int agc = 1;         // Auto gain control
   int agc_gain = 0;    // 0-30
-  int gainceiling = 0; // 0-6
-  int bpc = 0;         // Black pixel correction
-  int wpc = 1;         // White pixel correction
-  int raw_gma = 1;     // Gamma correction
-  int lenc = 1;        // Lens correction
-  int hmirror = 0;     // Horizontal mirror
-  int vflip = 0;       // Vertical flip
-  int dcw = 1;         // Downsize enable
-  int colorbar = 0;    // Color bar test pattern
+  int gainceiling = 2; // 0-6
 } settings;
 
 void applyCameraSettings();
+void calibrateCamera();
+void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height);
+void convertTo1Bit(uint8_t* grayscale_buf, size_t len);
 
 void initCamera() {
   camera_config.ledc_channel = LEDC_CHANNEL_0;
@@ -88,9 +81,9 @@ void initCamera() {
   camera_config.pin_pwdn = PWDN_GPIO_NUM;
   camera_config.pin_reset = RESET_GPIO_NUM;
   camera_config.xclk_freq_hz = 20000000;
-  camera_config.pixel_format = PIXFORMAT_JPEG;
+  camera_config.pixel_format = PIXFORMAT_GRAYSCALE; // Use grayscale for minimal processing
   camera_config.frame_size = (framesize_t)settings.framesize;
-  camera_config.jpeg_quality = settings.quality;
+  camera_config.jpeg_quality = 12; // Not used for grayscale but needs to be set
   camera_config.fb_count = 1;
   camera_config.grab_mode = CAMERA_GRAB_LATEST;
 
@@ -108,37 +101,175 @@ void initCamera() {
   }
 
   applyCameraSettings();
+  
+  // Initialize LED flash pin
+  pinMode(LED_FLASH, OUTPUT);
+  digitalWrite(LED_FLASH, LOW); // Start with LED off
 }
 
 void applyCameraSettings() {
   if (s == NULL) return;
 
   s->set_framesize(s, (framesize_t)settings.framesize);
-  s->set_quality(s, settings.quality);
   s->set_brightness(s, settings.brightness);
   s->set_contrast(s, settings.contrast);
   s->set_saturation(s, settings.saturation);
   s->set_sharpness(s, settings.sharpness);
-  s->set_denoise(s, settings.denoise);
-  s->set_special_effect(s, settings.special_effect);
-  s->set_wb_mode(s, settings.wb_mode);
-  s->set_whitebal(s, settings.awb);
-  s->set_awb_gain(s, settings.awb_gain);
-  s->set_exposure_ctrl(s, settings.aec);
-  s->set_aec2(s, settings.aec2);
   s->set_ae_level(s, settings.ae_level);
-  s->set_aec_value(s, settings.aec_value);
-  s->set_gain_ctrl(s, settings.agc);
   s->set_agc_gain(s, settings.agc_gain);
   s->set_gainceiling(s, (gainceiling_t)settings.gainceiling);
-  s->set_bpc(s, settings.bpc);
-  s->set_wpc(s, settings.wpc);
-  s->set_raw_gma(s, settings.raw_gma);
-  s->set_lenc(s, settings.lenc);
-  s->set_hmirror(s, settings.hmirror);
-  s->set_vflip(s, settings.vflip);
-  s->set_dcw(s, settings.dcw);
-  s->set_colorbar(s, settings.colorbar);
+  
+  // Disable features not needed for simple line detection
+  s->set_whitebal(s, 0);
+  s->set_awb_gain(s, 0);
+  s->set_exposure_ctrl(s, 1);
+  s->set_aec2(s, 0);
+  s->set_gain_ctrl(s, 1);
+  s->set_bpc(s, 1);
+  s->set_wpc(s, 1);
+  s->set_raw_gma(s, 1);
+  s->set_lenc(s, 1);
+  s->set_hmirror(s, 0);
+  s->set_vflip(s, 0);
+  s->set_dcw(s, 1);
+  s->set_colorbar(s, 0);
+}
+
+// Convert grayscale image to 1-bit (binary) using threshold
+void convertTo1Bit(uint8_t* grayscale_buf, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (invertColors) {
+      // White line on black field
+      grayscale_buf[i] = (grayscale_buf[i] < binaryThreshold) ? 0 : 255;
+    } else {
+      // Black line on white field
+      grayscale_buf[i] = (grayscale_buf[i] < binaryThreshold) ? 0 : 255;
+    }
+  }
+}
+
+// Auto-calibrate camera threshold by analyzing the histogram
+void calibrateCamera() {
+  Serial.println("Starting calibration...");
+  
+  // Turn on LED for consistent lighting
+  digitalWrite(LED_FLASH, HIGH);
+  delay(100); // Let LED stabilize
+  
+  // Capture a frame
+  camera_fb_t * fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera capture failed during calibration");
+    digitalWrite(LED_FLASH, LOW);
+    return;
+  }
+  
+  if (fb->format != PIXFORMAT_GRAYSCALE) {
+    Serial.println("Expected grayscale format");
+    esp_camera_fb_return(fb);
+    digitalWrite(LED_FLASH, LOW);
+    return;
+  }
+  
+  // Build histogram
+  int histogram[256] = {0};
+  for (size_t i = 0; i < fb->len; i++) {
+    histogram[fb->buf[i]]++;
+  }
+  
+  // Find peaks in histogram (bimodal distribution for line and field)
+  int maxPeak1 = 0, maxPeak2 = 0;
+  int peak1Idx = 0, peak2Idx = 0;
+  
+  // Find first peak (darker values)
+  for (int i = 0; i < 128; i++) {
+    if (histogram[i] > maxPeak1) {
+      maxPeak1 = histogram[i];
+      peak1Idx = i;
+    }
+  }
+  
+  // Find second peak (brighter values)
+  for (int i = 128; i < 256; i++) {
+    if (histogram[i] > maxPeak2) {
+      maxPeak2 = histogram[i];
+      peak2Idx = i;
+    }
+  }
+  
+  // Calculate threshold as midpoint between peaks
+  if (maxPeak1 > 0 && maxPeak2 > 0) {
+    binaryThreshold = (peak1Idx + peak2Idx) / 2;
+    
+    // Determine if we have black on white or white on black
+    // Count pixels near edges of frame
+    int edgeSum = 0;
+    int edgeCount = 0;
+    int width = fb->width;
+    int height = fb->height;
+    
+    // Sample top and bottom rows
+    for (int x = 0; x < width; x++) {
+      edgeSum += fb->buf[x]; // Top row
+      edgeSum += fb->buf[(height-1) * width + x]; // Bottom row
+      edgeCount += 2;
+    }
+    
+    // Sample left and right columns
+    for (int y = 1; y < height-1; y++) {
+      edgeSum += fb->buf[y * width]; // Left column
+      edgeSum += fb->buf[y * width + (width-1)]; // Right column
+      edgeCount += 2;
+    }
+    
+    int edgeAvg = edgeSum / edgeCount;
+    
+    // If edges are dark, field is black (invert colors)
+    invertColors = (edgeAvg < binaryThreshold);
+    
+    Serial.printf("Calibration complete: threshold=%d, peak1=%d, peak2=%d, invertColors=%d\n", 
+                  binaryThreshold, peak1Idx, peak2Idx, invertColors);
+  } else {
+    Serial.println("Calibration failed: could not find two peaks");
+  }
+  
+  esp_camera_fb_return(fb);
+  digitalWrite(LED_FLASH, LOW);
+}
+
+// Detect line center by scanning from edges
+void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
+  // Scan middle row from left and right to find line edges
+  int midRow = height / 2;
+  int leftEdge = -1, rightEdge = -1;
+  
+  uint8_t lineColor = invertColors ? 255 : 0; // What color the line should be
+  
+  // Scan from left
+  for (int x = 0; x < width; x++) {
+    if (grayscale_buf[midRow * width + x] == lineColor) {
+      leftEdge = x;
+      break;
+    }
+  }
+  
+  // Scan from right
+  for (int x = width - 1; x >= 0; x--) {
+    if (grayscale_buf[midRow * width + x] == lineColor) {
+      rightEdge = x;
+      break;
+    }
+  }
+  
+  // Calculate center
+  if (leftEdge != -1 && rightEdge != -1 && rightEdge > leftEdge) {
+    lineCenterX = (leftEdge + rightEdge) / 2;
+    int lineWidth = rightEdge - leftEdge;
+    Serial.printf("Line detected: center=%d, width=%d pixels\n", lineCenterX, lineWidth);
+  } else {
+    lineCenterX = -1;
+    Serial.println("No line detected");
+  }
 }
 
 String getMainPage() {
@@ -148,357 +279,178 @@ String getMainPage() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32-CAM Line Detector</title>
+    <title>ESP32-CAM 1-Bit Line Detector</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #222;
             min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             padding: 20px;
         }
         .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            max-width: 800px;
+            background: #333;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             overflow: hidden;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #111;
             color: white;
-            padding: 30px;
+            padding: 20px;
             text-align: center;
         }
-        .header h1 { font-size: 2em; margin-bottom: 10px; }
-        .header p { opacity: 0.9; }
-        .content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            padding: 30px;
-        }
+        .header h1 { font-size: 1.8em; margin-bottom: 5px; }
+        .header p { opacity: 0.7; font-size: 0.9em; }
         .camera-view {
-            grid-column: 1 / -1;
+            background: #000;
+            padding: 20px;
             text-align: center;
         }
-        .camera-view img {
-            width: 100%;
-            max-width: 640px;
-            border-radius: 10px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        .camera-view canvas {
+            max-width: 100%;
+            border: 2px solid #555;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
         }
         .controls {
-            background: #f8f9fa;
             padding: 20px;
-            border-radius: 10px;
+            text-align: center;
         }
-        .control-group {
-            margin-bottom: 20px;
-        }
-        .control-group label {
-            display: block;
-            font-weight: bold;
-            margin-bottom: 8px;
-            color: #333;
-        }
-        .control-group input[type="range"] {
-            width: 100%;
-            height: 6px;
-            border-radius: 3px;
-            background: #ddd;
-            outline: none;
-        }
-        .control-group input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: #667eea;
-            cursor: pointer;
-        }
-        .control-group select {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-        .value-display {
-            display: inline-block;
-            float: right;
-            background: #667eea;
-            color: white;
-            padding: 2px 10px;
-            border-radius: 12px;
-            font-size: 12px;
-        }
-        .presets {
-            grid-column: 1 / -1;
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-        .preset-btn {
-            padding: 12px 24px;
+        .calibrate-btn {
+            padding: 15px 40px;
             border: none;
-            border-radius: 25px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 5px;
+            background: #4CAF50;
             color: white;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 16px;
             font-weight: bold;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: background 0.3s;
         }
-        .preset-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        .calibrate-btn:hover {
+            background: #45a049;
         }
-        .info {
-            grid-column: 1 / -1;
-            background: #fff3cd;
-            padding: 15px;
-            border-radius: 10px;
-            border-left: 5px solid #ffc107;
+        .calibrate-btn:active {
+            background: #3d8b40;
         }
-        .info h3 { margin-bottom: 10px; color: #856404; }
-        .info ul { margin-left: 20px; color: #856404; }
-        .info li { margin-bottom: 5px; }
-        @media (max-width: 768px) {
-            .content { grid-template-columns: 1fr; }
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            background: #444;
+            color: #fff;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 14px;
         }
+        .status-item {
+            margin: 5px 0;
+        }
+        .line-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .line-detected { background: #4CAF50; }
+        .line-not-detected { background: #f44336; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 ESP32-CAM Line Detector</h1>
-            <p>Настройка параметров камеры для распознавания линии</p>
+            <h1>⚫⚪ 1-Bit Line Detector</h1>
+            <p>ESP32-CAM Binary Line Tracking</p>
         </div>
-        <div class="content">
-            <div class="camera-view">
-                <img id="stream" src="/stream">
-            </div>
-            
-            <div class="info">
-                <h3>💡 Рекомендации для детектирования линии:</h3>
-                <ul>
-                    <li><strong>Grayscale Effect:</strong> Лучше всего для черно-белых линий</li>
-                    <li><strong>Низкая насыщенность:</strong> Уменьшает цветовые помехи</li>
-                    <li><strong>Контраст:</strong> Повышайте для четкости линии на фоне</li>
-                    <li><strong>Разрешение:</strong> VGA (640x480) - баланс скорости и качества</li>
-                    <li><strong>Качество:</strong> 10-15 для быстрой обработки</li>
-                </ul>
-            </div>
-
-            <div class="presets">
-                <button class="preset-btn" onclick="setPreset('highQuality')">Высокое качество</button>
-                <button class="preset-btn" onclick="setPreset('balanced')">Сбалансированный</button>
-                <button class="preset-btn" onclick="setPreset('highSpeed')">Высокая скорость</button>
-                <button class="preset-btn" onclick="setPreset('indoor')">В помещении</button>
-                <button class="preset-btn" onclick="setPreset('outdoor')">На улице</button>
-            </div>
-
-            <div class="controls">
-                <h3 style="margin-bottom: 15px;">Основные параметры</h3>
-                
-                <div class="control-group">
-                    <label>Разрешение <span class="value-display" id="framesize-val">VGA</span></label>
-                    <select id="framesize" onchange="updateSetting('framesize', this.value)">
-                        <option value="5">QVGA (320x240)</option>
-                        <option value="6">CIF (400x296)</option>
-                        <option value="7" selected>VGA (640x480)</option>
-                        <option value="8">SVGA (800x600)</option>
-                        <option value="9">XGA (1024x768)</option>
-                        <option value="10">HD (1280x720)</option>
-                        <option value="11">SXGA (1280x1024)</option>
-                        <option value="12">UXGA (1600x1200)</option>
-                    </select>
+        <div class="camera-view">
+            <canvas id="canvas" width="320" height="240"></canvas>
+        </div>
+        <div class="controls">
+            <button class="calibrate-btn" onclick="calibrate()">🔧 КАЛИБРОВКА</button>
+            <div class="status">
+                <div class="status-item">
+                    <span class="line-indicator" id="lineIndicator"></span>
+                    <span id="lineStatus">Ожидание...</span>
                 </div>
-
-                <div class="control-group">
-                    <label>Качество (0-63) <span class="value-display" id="quality-val">10</span></label>
-                    <input type="range" id="quality" min="0" max="63" value="10" 
-                           onchange="updateSetting('quality', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>Яркость (-2 to 2) <span class="value-display" id="brightness-val">0</span></label>
-                    <input type="range" id="brightness" min="-2" max="2" value="0" 
-                           onchange="updateSetting('brightness', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>Контраст (-2 to 2) <span class="value-display" id="contrast-val">0</span></label>
-                    <input type="range" id="contrast" min="-2" max="2" value="0" 
-                           onchange="updateSetting('contrast', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>Насыщенность (-2 to 2) <span class="value-display" id="saturation-val">-2</span></label>
-                    <input type="range" id="saturation" min="-2" max="2" value="-2" 
-                           onchange="updateSetting('saturation', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>Эффект <span class="value-display" id="effect-val">Grayscale</span></label>
-                    <select id="special_effect" onchange="updateSetting('special_effect', this.value)">
-                        <option value="0">No Effect</option>
-                        <option value="1">Negative</option>
-                        <option value="2" selected>Grayscale</option>
-                        <option value="3">Red Tint</option>
-                        <option value="4">Green Tint</option>
-                        <option value="5">Blue Tint</option>
-                        <option value="6">Sepia</option>
-                    </select>
-                </div>
-            </div>
-
-            <div class="controls">
-                <h3 style="margin-bottom: 15px;">Расширенные параметры</h3>
-                
-                <div class="control-group">
-                    <label>Резкость (-2 to 2) <span class="value-display" id="sharpness-val">0</span></label>
-                    <input type="range" id="sharpness" min="-2" max="2" value="0" 
-                           onchange="updateSetting('sharpness', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>Шумоподавление (0-8) <span class="value-display" id="denoise-val">0</span></label>
-                    <input type="range" id="denoise" min="0" max="8" value="0" 
-                           onchange="updateSetting('denoise', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>AE Level (-2 to 2) <span class="value-display" id="ae_level-val">0</span></label>
-                    <input type="range" id="ae_level" min="-2" max="2" value="0" 
-                           onchange="updateSetting('ae_level', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>AGC Gain (0-30) <span class="value-display" id="agc_gain-val">0</span></label>
-                    <input type="range" id="agc_gain" min="0" max="30" value="0" 
-                           onchange="updateSetting('agc_gain', this.value)">
-                </div>
-
-                <div class="control-group">
-                    <label>Gain Ceiling <span class="value-display" id="gainceiling-val">0</span></label>
-                    <select id="gainceiling" onchange="updateSetting('gainceiling', this.value)">
-                        <option value="0" selected>2x</option>
-                        <option value="1">4x</option>
-                        <option value="2">8x</option>
-                        <option value="3">16x</option>
-                        <option value="4">32x</option>
-                        <option value="5">64x</option>
-                        <option value="6">128x</option>
-                    </select>
-                </div>
-
-                <div class="control-group">
-                    <label>
-                        <input type="checkbox" id="hmirror" onchange="updateSetting('hmirror', this.checked ? 1 : 0)">
-                        Горизонтальное зеркало
-                    </label>
-                </div>
-
-                <div class="control-group">
-                    <label>
-                        <input type="checkbox" id="vflip" onchange="updateSetting('vflip', this.checked ? 1 : 0)">
-                        Вертикальное отражение
-                    </label>
-                </div>
-
-                <div class="control-group">
-                    <label>
-                        <input type="checkbox" id="awb" checked onchange="updateSetting('awb', this.checked ? 1 : 0)">
-                        Auto White Balance
-                    </label>
-                </div>
-
-                <div class="control-group">
-                    <label>
-                        <input type="checkbox" id="aec" checked onchange="updateSetting('aec', this.checked ? 1 : 0)">
-                        Auto Exposure Control
-                    </label>
-                </div>
-
-                <div class="control-group">
-                    <label>
-                        <input type="checkbox" id="agc" checked onchange="updateSetting('agc', this.checked ? 1 : 0)">
-                        Auto Gain Control
-                    </label>
-                </div>
+                <div class="status-item" id="thresholdStatus">Порог: ---</div>
+                <div class="status-item" id="positionStatus">Позиция: ---</div>
             </div>
         </div>
     </div>
 
     <script>
-        function updateSetting(param, value) {
-            fetch('/set?' + param + '=' + value)
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let updateInterval;
+
+        function calibrate() {
+            document.getElementById('lineStatus').textContent = 'Калибровка...';
+            fetch('/calibrate')
                 .then(response => response.text())
                 .then(data => {
-                    console.log('Updated ' + param + ' to ' + value);
-                    // Update display value
-                    var display = document.getElementById(param + '-val');
-                    if (display) {
-                        if (param === 'framesize') {
-                            var sizes = ['', '', '', '', '', 'QVGA', 'CIF', 'VGA', 'SVGA', 'XGA', 'HD', 'SXGA', 'UXGA'];
-                            display.textContent = sizes[value];
-                        } else if (param === 'special_effect') {
-                            var effects = ['No Effect', 'Negative', 'Grayscale', 'Red', 'Green', 'Blue', 'Sepia'];
-                            display.textContent = effects[value];
-                        } else if (param === 'gainceiling') {
-                            display.textContent = (2 << parseInt(value)) + 'x';
-                        } else {
-                            display.textContent = value;
-                        }
-                    }
+                    console.log('Calibration response:', data);
+                    setTimeout(updateStatus, 500);
                 })
-                .catch(error => console.error('Error:', error));
+                .catch(error => {
+                    console.error('Calibration error:', error);
+                    document.getElementById('lineStatus').textContent = 'Ошибка калибровки';
+                });
         }
 
-        function setPreset(preset) {
-            fetch('/preset?name=' + preset)
+        function updateStatus() {
+            fetch('/status')
                 .then(response => response.json())
-                .then(settings => {
-                    console.log('Applied preset: ' + preset);
-                    // Update UI to reflect new settings
-                    Object.keys(settings).forEach(key => {
-                        var element = document.getElementById(key);
-                        if (element) {
-                            if (element.type === 'checkbox') {
-                                element.checked = settings[key] === 1;
-                            } else {
-                                element.value = settings[key];
-                            }
-                            // Update display
-                            var display = document.getElementById(key + '-val');
-                            if (display) {
-                                if (key === 'framesize') {
-                                    var sizes = ['', '', '', '', '', 'QVGA', 'CIF', 'VGA', 'SVGA', 'XGA', 'HD', 'SXGA', 'UXGA'];
-                                    display.textContent = sizes[settings[key]];
-                                } else if (key === 'special_effect') {
-                                    var effects = ['No Effect', 'Negative', 'Grayscale', 'Red', 'Green', 'Blue', 'Sepia'];
-                                    display.textContent = effects[settings[key]];
-                                } else if (key === 'gainceiling') {
-                                    display.textContent = (2 << parseInt(settings[key])) + 'x';
-                                } else {
-                                    display.textContent = settings[key];
-                                }
-                            }
-                        }
-                    });
+                .then(data => {
+                    const indicator = document.getElementById('lineIndicator');
+                    const lineStatus = document.getElementById('lineStatus');
+                    const thresholdStatus = document.getElementById('thresholdStatus');
+                    const positionStatus = document.getElementById('positionStatus');
+                    
+                    if (data.lineDetected) {
+                        indicator.className = 'line-indicator line-detected';
+                        lineStatus.textContent = 'Линия обнаружена!';
+                        positionStatus.textContent = 'Позиция: ' + data.lineCenterX + ' px';
+                    } else {
+                        indicator.className = 'line-indicator line-not-detected';
+                        lineStatus.textContent = 'Линия не обнаружена';
+                        positionStatus.textContent = 'Позиция: ---';
+                    }
+                    
+                    thresholdStatus.textContent = 'Порог: ' + data.threshold + 
+                        (data.invertColors ? ' (инверсия)' : ' (норма)');
                 })
-                .catch(error => console.error('Error:', error));
+                .catch(error => console.error('Status error:', error));
         }
 
-        // Reload stream image periodically
-        setInterval(function() {
-            document.getElementById('stream').src = '/stream?' + new Date().getTime();
-        }, 100);
+        function updateImage() {
+            fetch('/stream')
+                .then(response => response.blob())
+                .then(blob => {
+                    const img = new Image();
+                    img.onload = function() {
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    };
+                    img.src = URL.createObjectURL(blob);
+                })
+                .catch(error => console.error('Stream error:', error));
+        }
+
+        // Update status every 500ms
+        setInterval(updateStatus, 500);
+        
+        // Update image every 100ms
+        setInterval(updateImage, 100);
+        
+        // Initial update
+        setTimeout(() => {
+            updateStatus();
+            updateImage();
+        }, 500);
     </script>
 </body>
 </html>
@@ -512,180 +464,79 @@ void setupRoutes() {
     request->send(200, "text/html", getMainPage());
   });
 
-  // Camera stream
+  // Camera stream - returns 1-bit processed image as JPEG
   server.on("/stream", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Turn on LED for consistent lighting
+    digitalWrite(LED_FLASH, HIGH);
+    delay(10);
+    
     camera_fb_t * fb = esp_camera_fb_get();
     if (!fb) {
+      digitalWrite(LED_FLASH, LOW);
       request->send(500, "text/plain", "Camera capture failed");
       return;
     }
-    AsyncWebServerResponse *response = request->beginResponse(200, "image/jpeg", fb->buf, fb->len);
-    response->addHeader("Access-Control-Allow-Origin", "*");
-    request->send(response);
-    esp_camera_fb_return(fb);
-  });
-
-  // Set camera parameter
-  server.on("/set", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("framesize")) {
-      settings.framesize = request->getParam("framesize")->value().toInt();
-    }
-    if (request->hasParam("quality")) {
-      settings.quality = request->getParam("quality")->value().toInt();
-    }
-    if (request->hasParam("brightness")) {
-      settings.brightness = request->getParam("brightness")->value().toInt();
-    }
-    if (request->hasParam("contrast")) {
-      settings.contrast = request->getParam("contrast")->value().toInt();
-    }
-    if (request->hasParam("saturation")) {
-      settings.saturation = request->getParam("saturation")->value().toInt();
-    }
-    if (request->hasParam("sharpness")) {
-      settings.sharpness = request->getParam("sharpness")->value().toInt();
-    }
-    if (request->hasParam("denoise")) {
-      settings.denoise = request->getParam("denoise")->value().toInt();
-    }
-    if (request->hasParam("special_effect")) {
-      settings.special_effect = request->getParam("special_effect")->value().toInt();
-    }
-    if (request->hasParam("wb_mode")) {
-      settings.wb_mode = request->getParam("wb_mode")->value().toInt();
-    }
-    if (request->hasParam("awb")) {
-      settings.awb = request->getParam("awb")->value().toInt();
-    }
-    if (request->hasParam("awb_gain")) {
-      settings.awb_gain = request->getParam("awb_gain")->value().toInt();
-    }
-    if (request->hasParam("aec")) {
-      settings.aec = request->getParam("aec")->value().toInt();
-    }
-    if (request->hasParam("aec2")) {
-      settings.aec2 = request->getParam("aec2")->value().toInt();
-    }
-    if (request->hasParam("ae_level")) {
-      settings.ae_level = request->getParam("ae_level")->value().toInt();
-    }
-    if (request->hasParam("aec_value")) {
-      settings.aec_value = request->getParam("aec_value")->value().toInt();
-    }
-    if (request->hasParam("agc")) {
-      settings.agc = request->getParam("agc")->value().toInt();
-    }
-    if (request->hasParam("agc_gain")) {
-      settings.agc_gain = request->getParam("agc_gain")->value().toInt();
-    }
-    if (request->hasParam("gainceiling")) {
-      settings.gainceiling = request->getParam("gainceiling")->value().toInt();
-    }
-    if (request->hasParam("bpc")) {
-      settings.bpc = request->getParam("bpc")->value().toInt();
-    }
-    if (request->hasParam("wpc")) {
-      settings.wpc = request->getParam("wpc")->value().toInt();
-    }
-    if (request->hasParam("raw_gma")) {
-      settings.raw_gma = request->getParam("raw_gma")->value().toInt();
-    }
-    if (request->hasParam("lenc")) {
-      settings.lenc = request->getParam("lenc")->value().toInt();
-    }
-    if (request->hasParam("hmirror")) {
-      settings.hmirror = request->getParam("hmirror")->value().toInt();
-    }
-    if (request->hasParam("vflip")) {
-      settings.vflip = request->getParam("vflip")->value().toInt();
-    }
-    if (request->hasParam("dcw")) {
-      settings.dcw = request->getParam("dcw")->value().toInt();
-    }
-    if (request->hasParam("colorbar")) {
-      settings.colorbar = request->getParam("colorbar")->value().toInt();
+    
+    if (fb->format != PIXFORMAT_GRAYSCALE) {
+      esp_camera_fb_return(fb);
+      digitalWrite(LED_FLASH, LOW);
+      request->send(500, "text/plain", "Expected grayscale format");
+      return;
     }
     
-    applyCameraSettings();
-    request->send(200, "text/plain", "OK");
+    // Convert to 1-bit
+    convertTo1Bit(fb->buf, fb->len);
+    
+    // Detect line center
+    detectLineCenter(fb->buf, fb->width, fb->height);
+    
+    // Draw line indicator if detected
+    if (lineCenterX >= 0 && lineCenterX < fb->width) {
+      int midRow = fb->height / 2;
+      // Draw a vertical line at detected center (5 pixels wide)
+      for (int y = 0; y < fb->height; y++) {
+        for (int dx = -2; dx <= 2; dx++) {
+          int x = lineCenterX + dx;
+          if (x >= 0 && x < fb->width) {
+            // Invert pixel at line center to make it visible
+            int idx = y * fb->width + x;
+            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
+          }
+        }
+      }
+    }
+    
+    // Convert 1-bit grayscale to JPEG for transmission
+    uint8_t * out_jpg = NULL;
+    size_t out_jpg_len = 0;
+    if (frame2jpg(fb, 80, &out_jpg, &out_jpg_len)) {
+      AsyncWebServerResponse *response = request->beginResponse(200, "image/jpeg", out_jpg, out_jpg_len);
+      response->addHeader("Access-Control-Allow-Origin", "*");
+      request->send(response);
+      free(out_jpg);
+    } else {
+      request->send(500, "text/plain", "JPEG conversion failed");
+    }
+    
+    esp_camera_fb_return(fb);
+    digitalWrite(LED_FLASH, LOW);
   });
 
-  // Apply preset configurations
-  server.on("/preset", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("name")) {
-      String preset = request->getParam("name")->value();
-      
-      if (preset == "highQuality") {
-        // High quality, slower
-        settings.framesize = 7;  // VGA
-        settings.quality = 5;
-        settings.brightness = 0;
-        settings.contrast = 1;
-        settings.saturation = -2;
-        settings.special_effect = 2; // Grayscale
-        settings.sharpness = 1;
-        settings.denoise = 2;
-      } else if (preset == "balanced") {
-        // Balanced settings (default)
-        settings.framesize = 7;  // VGA
-        settings.quality = 10;
-        settings.brightness = 0;
-        settings.contrast = 0;
-        settings.saturation = -2;
-        settings.special_effect = 2; // Grayscale
-        settings.sharpness = 0;
-        settings.denoise = 0;
-      } else if (preset == "highSpeed") {
-        // High speed, lower quality
-        settings.framesize = 5;  // QVGA
-        settings.quality = 20;
-        settings.brightness = 0;
-        settings.contrast = 0;
-        settings.saturation = -2;
-        settings.special_effect = 2; // Grayscale
-        settings.sharpness = 0;
-        settings.denoise = 0;
-      } else if (preset == "indoor") {
-        // Indoor lighting optimized
-        settings.framesize = 7;  // VGA
-        settings.quality = 10;
-        settings.brightness = 1;
-        settings.contrast = 1;
-        settings.saturation = -2;
-        settings.special_effect = 2; // Grayscale
-        settings.ae_level = 1;
-      } else if (preset == "outdoor") {
-        // Outdoor lighting optimized
-        settings.framesize = 7;  // VGA
-        settings.quality = 10;
-        settings.brightness = -1;
-        settings.contrast = 1;
-        settings.saturation = -2;
-        settings.special_effect = 2; // Grayscale
-        settings.ae_level = -1;
-      }
-      
-      applyCameraSettings();
-      
-      // Return current settings as JSON
-      String json = "{";
-      json += "\"framesize\":" + String(settings.framesize) + ",";
-      json += "\"quality\":" + String(settings.quality) + ",";
-      json += "\"brightness\":" + String(settings.brightness) + ",";
-      json += "\"contrast\":" + String(settings.contrast) + ",";
-      json += "\"saturation\":" + String(settings.saturation) + ",";
-      json += "\"sharpness\":" + String(settings.sharpness) + ",";
-      json += "\"denoise\":" + String(settings.denoise) + ",";
-      json += "\"special_effect\":" + String(settings.special_effect) + ",";
-      json += "\"ae_level\":" + String(settings.ae_level) + ",";
-      json += "\"agc_gain\":" + String(settings.agc_gain) + ",";
-      json += "\"gainceiling\":" + String(settings.gainceiling);
-      json += "}";
-      
-      request->send(200, "application/json", json);
-    } else {
-      request->send(400, "text/plain", "Missing preset name");
-    }
+  // Calibration endpoint
+  server.on("/calibrate", HTTP_GET, [](AsyncWebServerRequest *request) {
+    calibrateCamera();
+    request->send(200, "text/plain", "Calibration complete");
+  });
+  
+  // Status endpoint - returns current detection status
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String json = "{";
+    json += "\"threshold\":" + String(binaryThreshold) + ",";
+    json += "\"invertColors\":" + String(invertColors ? "true" : "false") + ",";
+    json += "\"lineDetected\":" + String(lineCenterX >= 0 ? "true" : "false") + ",";
+    json += "\"lineCenterX\":" + String(lineCenterX);
+    json += "}";
+    request->send(200, "application/json", json);
   });
 }
 
