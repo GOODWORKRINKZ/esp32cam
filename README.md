@@ -1,311 +1,221 @@
-# ESP32-CAM Line Detection System for Linear Robot
+# ESP32-CAM Line Detector для роботов, следующих по линии
 
-A comprehensive ESP32-CAM solution for line detection optimized for linear robot applications. This project provides camera configuration experiments and optimized settings for reliable line detection under various lighting conditions.
+Проект для ESP32-CAM с веб-интерфейсом для настройки параметров камеры, оптимизированных для распознавания линий роботами, следующими по траектории.
 
-## Features
+## 🎯 Возможности
 
-- **Optimized Camera Settings**: Pre-configured presets for different lighting conditions
-- **Real-time Line Detection**: Fast and efficient line detection algorithm
-- **Web Interface**: Live camera stream and settings adjustment via web browser
-- **Multiple Presets**: Bright lighting, low light, and high contrast configurations
-- **Adjustable Parameters**: Fine-tune camera settings for your specific environment
-- **Line Position Tracking**: Accurate line position and width detection
-- **RESTful API**: Easy integration with robot control systems
+- **Веб-сервер с интуитивным интерфейсом** для настройки параметров камеры в реальном времени
+- **Прямая трансляция видео** с камеры для визуального контроля
+- **5 предустановленных режимов** для различных условий съемки
+- **Полная настройка камеры**: разрешение, яркость, контраст, насыщенность, резкость и многое другое
+- **Оптимизация для детектирования линии**: режим Grayscale, низкая насыщенность, настройки контраста
+- **Точка доступа WiFi** - ESP32-CAM создает собственную сеть для подключения
 
-## Hardware Requirements
+## 🔧 Компоненты
 
-- ESP32-CAM (AI-Thinker module recommended)
-- USB-to-Serial adapter (for programming)
-- Power supply (5V recommended)
-- Linear robot chassis (optional, for testing)
+- ESP32-CAM (модель AI-Thinker)
+- Адаптер USB-TTL для прошивки (опционально)
 
-## Software Requirements
+## 📦 Установка
 
-- Arduino IDE 1.8.x or 2.x
-- ESP32 Board Support Package
-- Required libraries (included with ESP32 package):
-  - esp_camera
-  - WiFi
-  - esp_http_server
+### 1. Установите PlatformIO
 
-## Installation
+Если у вас еще не установлен PlatformIO:
+- [VS Code с расширением PlatformIO](https://platformio.org/install/ide?install=vscode)
+- Или используйте PlatformIO Core (CLI)
 
-### 1. Arduino IDE Setup
+### 2. Клонируйте репозиторий
 
-1. Install Arduino IDE from [arduino.cc](https://www.arduino.cc/en/software)
-2. Add ESP32 board support:
-   - Open File → Preferences
-   - Add to "Additional Board Manager URLs":
-     ```
-     https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-     ```
-   - Open Tools → Board → Boards Manager
-   - Search for "esp32" and install "esp32 by Espressif Systems"
-
-### 2. Upload the Code
-
-1. Open `esp32cam_line_detection.ino` in Arduino IDE
-2. Configure board settings:
-   - Board: "AI Thinker ESP32-CAM"
-   - Upload Speed: 115200
-   - Flash Frequency: 80MHz
-   - Flash Mode: QIO
-   - Partition Scheme: "Huge APP (3MB No OTA/1MB SPIFFS)"
-3. Connect ESP32-CAM to computer via USB-to-Serial adapter:
-   - ESP32-CAM GND → Adapter GND
-   - ESP32-CAM 5V → Adapter 5V
-   - ESP32-CAM U0R → Adapter TX
-   - ESP32-CAM U0T → Adapter RX
-   - ESP32-CAM GPIO0 → GND (for upload mode)
-4. Select the correct COM port in Tools → Port
-5. Click Upload
-6. After upload, disconnect GPIO0 from GND and press reset
-
-### 3. WiFi Configuration
-
-By default, the ESP32-CAM creates a WiFi access point:
-- SSID: `ESP32-CAM-LineBot`
-- Password: `linedetect123`
-
-To change these, edit the code:
-```cpp
-const char* ssid = "YourSSID";
-const char* password = "YourPassword";
+```bash
+git clone https://github.com/GOODWORKRINKZ/esp32cam.git
+cd esp32cam
 ```
 
-## Usage
+### 3. Соберите и загрузите
 
-### 1. Power On and Connect
+```bash
+# Сборка проекта
+pio run
 
-1. Power the ESP32-CAM (5V)
-2. Wait for the system to start (LED should blink)
-3. Connect to the WiFi network "ESP32-CAM-LineBot"
-4. Open a browser and navigate to `http://192.168.4.1`
+# Загрузка на ESP32-CAM
+pio run --target upload
 
-### 2. Web Interface
-
-The web interface provides:
-- **Live Camera Stream**: Real-time video feed
-- **Preset Buttons**: Quick access to optimized configurations
-- **Camera Controls**: Manual adjustment of brightness, contrast, saturation
-- **Line Detection Status**: Current line position, width, and confidence
-
-### 3. Camera Presets
-
-#### Preset 0: Bright Lighting
-Optimized for outdoor or well-lit indoor environments:
-- Standard brightness and contrast
-- Reduced saturation for better edge detection
-- Lower exposure to prevent overexposure
-
-#### Preset 1: Low Light
-Optimized for dim lighting conditions:
-- Increased brightness and gain
-- Maximum contrast
-- Higher exposure value
-- Enhanced noise reduction
-
-#### Preset 2: High Contrast (Recommended for Line Detection)
-Maximum contrast for clear line distinction:
-- Maximum contrast and sharpness
-- Minimum saturation (near grayscale)
-- Balanced exposure
-- Optimal for black lines on white background
-
-### 4. API Endpoints
-
-The system provides RESTful API endpoints:
-
-- `GET /` - Web interface
-- `GET /stream` - MJPEG video stream
-- `GET /control?preset=<0-2>` - Load preset configuration
-- `GET /control?<parameter>=<value>` - Adjust individual settings
-- `GET /detect` - Get line detection status (JSON)
-
-Example detection response:
-```json
-{
-  "detected": true,
-  "position": 45,
-  "width": 25,
-  "confidence": 85
-}
+# Мониторинг Serial порта
+pio device monitor
 ```
 
-## Camera Settings Guide
+## 🚀 Использование
 
-See [CAMERA_SETTINGS.md](CAMERA_SETTINGS.md) for detailed information about:
-- Camera parameter explanations
-- Optimal settings for line detection
-- Lighting recommendations
-- Troubleshooting tips
+1. **Включите ESP32-CAM** - устройство создаст точку доступа WiFi
+2. **Подключитесь к WiFi сети** `ESP32-CAM-LineDetector` (пароль: `12345678`)
+3. **Откройте браузер** и перейдите по адресу `http://192.168.4.1`
+4. **Настройте параметры камеры** для оптимального распознавания линии
 
-## Line Detection Algorithm
+## ⚙️ Предустановленные режимы
 
-See [LINE_DETECTION.md](LINE_DETECTION.md) for:
-- Algorithm implementation details
-- Different detection methods
-- Robot control integration
-- Performance optimization tips
+### 🎯 Высокое качество (High Quality)
+- Разрешение: VGA (640x480)
+- Качество: 5 (максимальное)
+- Лучше для точного распознавания, но медленнее
+- Рекомендуется для медленных роботов
 
-## Customization
+### ⚖️ Сбалансированный (Balanced)
+- Разрешение: VGA (640x480)
+- Качество: 10
+- **Оптимальный выбор для большинства случаев**
+- Хороший баланс скорости и качества
 
-### Adjusting WiFi Mode
+### ⚡ Высокая скорость (High Speed)
+- Разрешение: QVGA (320x240)
+- Качество: 20
+- Максимальная частота кадров
+- Подходит для быстрых роботов
 
-To use station mode (connect to existing WiFi) instead of AP mode:
+### 🏠 В помещении (Indoor)
+- Повышенная яркость
+- Оптимизация для искусственного освещения
+- Настройка автоэкспозиции для помещений
+
+### ☀️ На улице (Outdoor)
+- Пониженная яркость
+- Оптимизация для яркого солнечного света
+- Защита от переэкспонирования
+
+## 📊 Ключевые параметры для детектирования линии
+
+### Обязательные настройки:
+- **Special Effect: Grayscale** - преобразует изображение в черно-белое, упрощает алгоритмы
+- **Saturation: -2** - минимальная насыщенность для лучшего B&W контраста
+- **Contrast: 0-1** - повышение контраста помогает выделить линию
+
+### Рекомендуемые настройки производительности:
+- **Framesize: VGA (640x480)** - золотая середина между скоростью и детализацией
+- **Quality: 10-15** - достаточно для распознавания, но быстро обрабатывается
+- **Denoise: 0-2** - минимальное шумоподавление для скорости
+
+### Настройки для разных условий освещения:
+- **Яркое освещение**: brightness: -1, ae_level: -1
+- **Слабое освещение**: brightness: 1, ae_level: 1, agc_gain: 5-10
+- **Смешанное освещение**: используйте Auto White Balance (AWB) и Auto Exposure (AEC)
+
+## 🔌 Подключение ESP32-CAM
+
+Для модуля AI-Thinker ESP32-CAM используются следующие пины (предустановлены в коде):
+
+```
+PWDN_GPIO_NUM     32
+RESET_GPIO_NUM    -1
+XCLK_GPIO_NUM      0
+SIOD_GPIO_NUM     26
+SIOC_GPIO_NUM     27
+
+Y9_GPIO_NUM       35
+Y8_GPIO_NUM       34
+Y7_GPIO_NUM       39
+Y6_GPIO_NUM       36
+Y5_GPIO_NUM       21
+Y4_GPIO_NUM       19
+Y3_GPIO_NUM       18
+Y2_GPIO_NUM        5
+
+VSYNC_GPIO_NUM    25
+HREF_GPIO_NUM     23
+PCLK_GPIO_NUM     22
+```
+
+## 🛠️ Настройка WiFi
+
+По умолчанию ESP32-CAM создает точку доступа:
+- **SSID**: `ESP32-CAM-LineDetector`
+- **Password**: `12345678`
+- **IP адрес**: `192.168.4.1`
+
+Для подключения к существующей WiFi сети измените код в `src/main.cpp`:
 
 ```cpp
-// Replace in setup():
-WiFi.begin("YourWiFiSSID", "YourWiFiPassword");
+// Замените режим AP на режим клиента:
+WiFi.begin("your_wifi_ssid", "your_wifi_password");
 while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  delay(1000);
+  Serial.println("Connecting to WiFi...");
 }
 Serial.println(WiFi.localIP());
 ```
 
-### Modifying Line Detection Parameters
-
-```cpp
-#define LINE_THRESHOLD 128     // Adjust for your line darkness
-#define MIN_LINE_WIDTH 10      // Minimum pixels to consider as line
-```
-
-### Changing Frame Size
-
-In `initCamera()`:
-```cpp
-config.frame_size = FRAMESIZE_QVGA;  // Options: QQVGA, QVGA, CIF, VGA
-```
-
-Recommendations:
-- **QQVGA (160x120)**: Fastest, sufficient for basic line detection
-- **QVGA (320x240)**: Good balance (default)
-- **CIF (400x296)**: More detail, slower processing
-
-## Troubleshooting
-
-### Camera Not Initializing
-- Check all pin connections
-- Verify power supply is adequate (5V, >500mA)
-- Try pressing the reset button
-- Check serial monitor for error messages
-
-### Cannot Connect to WiFi
-- Verify SSID and password in code
-- Check that WiFi is enabled on your device
-- Try moving closer to ESP32-CAM
-- Reset the ESP32-CAM
-
-### Line Not Detected
-- Ensure good contrast between line and background
-- Adjust camera height (10-15cm recommended)
-- Try different presets (especially Preset 2)
-- Check lighting conditions
-- Adjust LINE_THRESHOLD value
-
-### Poor Image Quality
-- Clean camera lens
-- Adjust focus (if available)
-- Try lower JPEG quality setting (10-12)
-- Check for adequate lighting
-
-### Web Interface Not Loading
-- Verify you're connected to the correct WiFi network
-- Try http://192.168.4.1 directly
-- Check serial monitor for actual IP address
-- Clear browser cache
-
-## Performance Tips
-
-1. **Frame Rate**: Adjust detection frequency in loop()
-   ```cpp
-   delay(100); // Process 10 times per second
-   ```
-
-2. **Processing Speed**: Use QQVGA for faster operation
-   ```cpp
-   s->set_framesize(s, FRAMESIZE_QQVGA);
-   ```
-
-3. **Memory Usage**: Reduce JPEG quality for less memory
-   ```cpp
-   s->set_quality(s, 15);
-   ```
-
-4. **Battery Life**: Reduce clock frequency
-   ```cpp
-   config.xclk_freq_hz = 10000000; // 10MHz instead of 20MHz
-   ```
-
-## Integration with Robot
-
-### Reading Detection Data
-
-Access `lastResult` structure:
-```cpp
-if (lastResult.lineDetected) {
-    int position = lastResult.linePosition;  // 0-100
-    int deviation = position - 50;           // -50 to +50
-    
-    // Use deviation for motor control
-    leftMotor = baseSpeed + deviation;
-    rightMotor = baseSpeed - deviation;
-}
-```
-
-### Serial Communication
-
-Add to loop() to send data via serial:
-```cpp
-Serial.printf("L:%d,P:%d,W:%d,C:%d\n", 
-              lastResult.lineDetected,
-              lastResult.linePosition,
-              lastResult.lineWidth,
-              lastResult.confidence);
-```
-
-## Project Structure
+## 📝 Структура проекта
 
 ```
 esp32cam/
-├── esp32cam_line_detection.ino    # Main Arduino sketch
-├── CAMERA_SETTINGS.md             # Camera settings documentation
-├── LINE_DETECTION.md              # Line detection algorithm guide
-└── README.md                      # This file
+├── platformio.ini       # Конфигурация PlatformIO
+├── src/
+│   └── main.cpp        # Основной код программы
+└── README.md           # Документация
 ```
 
-## Contributing
+## 🧪 Тестирование
 
-Contributions are welcome! Please feel free to submit pull requests or open issues for:
-- Bug fixes
-- Performance improvements
-- New features
-- Documentation improvements
+1. **Визуальная проверка**: откройте веб-интерфейс и наблюдайте за видеопотоком
+2. **Тест линии**: поместите черную линию на белом фоне перед камерой
+3. **Проверка режимов**: переключайте предустановки и оценивайте четкость линии
+4. **Производительность**: следите за плавностью видео (консоль показывает FPS)
 
-## License
+## 🎓 Советы по оптимизации
 
-This project is open source and available for educational and commercial use.
+### Для максимальной скорости:
+1. Используйте QVGA (320x240) или CIF (400x296)
+2. Увеличьте Quality до 15-20
+3. Отключите Denoise
+4. Используйте Grayscale эффект
 
-## Acknowledgments
+### Для максимального качества:
+1. Используйте VGA (640x480) или выше
+2. Уменьшите Quality до 5-10
+3. Включите Denoise (1-2)
+4. Настройте Sharpness (+1)
 
-- ESP32-CAM community for hardware support
-- Espressif Systems for ESP32 platform
-- Arduino community for development tools
+### Для сложного освещения:
+1. Включите AWB (Auto White Balance)
+2. Включите AEC (Auto Exposure Control)
+3. Настройте AE Level в зависимости от яркости
+4. Экспериментируйте с Gain Ceiling
 
-## References
+## 🐛 Устранение неполадок
 
-- [ESP32-CAM Getting Started Guide](https://randomnerdtutorials.com/esp32-cam-video-streaming-face-recognition-arduino-ide/)
-- [ESP32 Camera Driver Documentation](https://github.com/espressif/esp32-camera)
-- [Line Following Robot Algorithms](https://www.robotshop.com/community/tutorials/show/line-following-robot-algorithm)
+### Камера не инициализируется
+- Проверьте подключение камерного модуля
+- Убедитесь, что используется правильная модель (AI-Thinker)
+- Перезагрузите ESP32-CAM
 
-## Support
+### Не могу подключиться к WiFi
+- Убедитесь, что SSID и пароль указаны правильно
+- Проверьте, что устройство создает точку доступа (используйте поиск WiFi сетей)
+- Проверьте Serial Monitor для отладочных сообщений
 
-For questions or issues:
-1. Check the [Troubleshooting](#troubleshooting) section
-2. Review [CAMERA_SETTINGS.md](CAMERA_SETTINGS.md) and [LINE_DETECTION.md](LINE_DETECTION.md)
-3. Open an issue on GitHub
+### Медленная видеотрансляция
+- Уменьшите разрешение (используйте QVGA или CIF)
+- Увеличьте значение Quality (меньше качество = больше скорость)
+- Убедитесь, что находитесь в зоне устойчивого WiFi сигнала
 
-## Version History
+### Плохое распознавание линии
+- Убедитесь, что используется Grayscale эффект
+- Настройте контраст (+1 или +2)
+- Установите Saturation на -2
+- Попробуйте разные предустановки для вашего освещения
 
-- **v1.0.0** - Initial release with camera settings optimization and line detection
+## 📚 Дополнительная информация
+
+- [Документация ESP32-CAM](https://github.com/espressif/esp32-camera)
+- [PlatformIO ESP32](https://docs.platformio.org/en/latest/platforms/espressif32.html)
+- [ESP Async WebServer](https://github.com/me-no-dev/ESPAsyncWebServer)
+
+## 📄 Лицензия
+
+MIT License - используйте свободно для своих проектов!
+
+## 🤝 Вклад
+
+Приветствуются pull request'ы и issues с предложениями по улучшению!
+
+## 👨‍💻 Автор
+
+Создано для роботов, следующих по линии. Оптимизировано для соревнований робототехники.
