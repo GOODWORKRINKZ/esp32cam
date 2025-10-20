@@ -45,14 +45,15 @@ camera_config_t camera_config;
 sensor_t * s = NULL;
 
 // Simple camera settings for minimal grayscale capture
+// FIXED: Settings with fixed/manual values to prevent auto-adjustment
 struct CameraSettings {
   int framesize = 5;   // FRAMESIZE_QVGA (320x240) - minimal for fast processing
   int brightness = 0;  // -2 to 2
   int contrast = 2;    // -2 to 2, maximum contrast for line detection
   int saturation = -2; // -2 to 2, lowest for B&W
   int sharpness = 2;   // -2 to 2, maximum sharpness
-  int ae_level = 0;    // -2 to 2
-  int agc_gain = 0;    // 0-30
+  int ae_level = 0;    // -2 to 2 (not used when AEC disabled)
+  int agc_gain = 5;    // 0-30, fixed manual gain value
   int gainceiling = 2; // 0-6
 } settings;
 
@@ -102,9 +103,9 @@ void initCamera() {
 
   applyCameraSettings();
   
-  // Initialize LED flash pin
+  // FIXED: Initialize LED flash pin and keep it OFF (disabled for now)
   pinMode(LED_FLASH, OUTPUT);
-  digitalWrite(LED_FLASH, LOW); // Start with LED off
+  digitalWrite(LED_FLASH, LOW); // Keep LED off - not needed
 }
 
 void applyCameraSettings() {
@@ -119,12 +120,13 @@ void applyCameraSettings() {
   s->set_agc_gain(s, settings.agc_gain);
   s->set_gainceiling(s, (gainceiling_t)settings.gainceiling);
   
-  // Disable features not needed for simple line detection
-  s->set_whitebal(s, 0);
-  s->set_awb_gain(s, 0);
-  s->set_exposure_ctrl(s, 1);
-  s->set_aec2(s, 0);
-  s->set_gain_ctrl(s, 1);
+  // FIXED: Disable auto-adjustments to prevent settings from changing automatically
+  s->set_whitebal(s, 0);      // Disable auto white balance
+  s->set_awb_gain(s, 0);      // Disable AWB gain
+  s->set_exposure_ctrl(s, 0); // Disable auto exposure control - IMPORTANT FIX
+  s->set_aec2(s, 0);          // Disable AEC2
+  s->set_aec_value(s, 300);   // Set fixed manual exposure value
+  s->set_gain_ctrl(s, 0);     // Disable auto gain control - IMPORTANT FIX
   s->set_bpc(s, 1);
   s->set_wpc(s, 1);
   s->set_raw_gma(s, 1);
@@ -152,22 +154,22 @@ void convertTo1Bit(uint8_t* grayscale_buf, size_t len) {
 void calibrateCamera() {
   Serial.println("Starting calibration...");
   
-  // Turn on LED for consistent lighting
-  digitalWrite(LED_FLASH, HIGH);
-  delay(100); // Let LED stabilize
+  // FIXED: LED flash disabled - not needed for now
+  // digitalWrite(LED_FLASH, HIGH);
+  // delay(100); // Let LED stabilize
   
   // Capture a frame
   camera_fb_t * fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("Camera capture failed during calibration");
-    digitalWrite(LED_FLASH, LOW);
+    // digitalWrite(LED_FLASH, LOW);
     return;
   }
   
   if (fb->format != PIXFORMAT_GRAYSCALE) {
     Serial.println("Expected grayscale format");
     esp_camera_fb_return(fb);
-    digitalWrite(LED_FLASH, LOW);
+    // digitalWrite(LED_FLASH, LOW);
     return;
   }
   
@@ -234,7 +236,7 @@ void calibrateCamera() {
   }
   
   esp_camera_fb_return(fb);
-  digitalWrite(LED_FLASH, LOW);
+  // digitalWrite(LED_FLASH, LOW);
 }
 
 // Detect line center by scanning from edges
@@ -490,20 +492,20 @@ void setupRoutes() {
 
   // Camera stream - returns 1-bit processed image as JPEG
   server.on("/stream", HTTP_GET, [](AsyncWebServerRequest *request) {
-    // Turn on LED for consistent lighting
-    digitalWrite(LED_FLASH, HIGH);
-    delay(10);
+    // FIXED: LED flash disabled - not needed for now
+    // digitalWrite(LED_FLASH, HIGH);
+    // delay(10);
     
     camera_fb_t * fb = esp_camera_fb_get();
     if (!fb) {
-      digitalWrite(LED_FLASH, LOW);
+      // digitalWrite(LED_FLASH, LOW);
       request->send(500, "text/plain", "Camera capture failed");
       return;
     }
     
     if (fb->format != PIXFORMAT_GRAYSCALE) {
       esp_camera_fb_return(fb);
-      digitalWrite(LED_FLASH, LOW);
+      // digitalWrite(LED_FLASH, LOW);
       request->send(500, "text/plain", "Expected grayscale format");
       return;
     }
@@ -543,7 +545,7 @@ void setupRoutes() {
     }
     
     esp_camera_fb_return(fb);
-    digitalWrite(LED_FLASH, LOW);
+    // digitalWrite(LED_FLASH, LOW);
   });
 
   // Control endpoint - handles slider updates
