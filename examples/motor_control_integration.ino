@@ -205,21 +205,34 @@ int detectLine(camera_fb_t* fb) {
     int totalPosition = 0;
     int detectionCount = 0;
     
-    // Scan bottom third of image
-    for (int row = height * 2/3; row < height; row += 3) {
+    // Scan middle third of image for better line detection
+    int startRow = height / 3;
+    int endRow = (2 * height) / 3;
+    
+    for (int row = startRow; row < endRow; row += 5) {
         int darkStart = -1;
         int darkEnd = -1;
+        bool inDarkLine = false;
         
         for (int x = 0; x < width; x++) {
             int idx = row * width + x;
             
-            if (pixels[idx] < LINE_THRESHOLD) {
-                if (darkStart == -1) darkStart = x;
-                darkEnd = x;
+            if (!inDarkLine && pixels[idx] < LINE_THRESHOLD) {
+                darkStart = x;
+                inDarkLine = true;
+            } else if (inDarkLine && pixels[idx] >= LINE_THRESHOLD) {
+                darkEnd = x - 1;
+                break;
             }
         }
         
-        if (darkStart != -1 && (darkEnd - darkStart) >= MIN_LINE_WIDTH) {
+        // If still in line at end of row
+        if (inDarkLine && darkEnd == -1) {
+            darkEnd = width - 1;
+        }
+        
+        // Validate line width
+        if (darkStart != -1 && darkEnd != -1 && (darkEnd - darkStart) >= MIN_LINE_WIDTH) {
             int lineCenter = (darkStart + darkEnd) / 2;
             totalPosition += (lineCenter * 100) / width;
             detectionCount++;
