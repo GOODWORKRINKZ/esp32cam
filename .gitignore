@@ -1,0 +1,46 @@
+# Arduino build files
+*.hex
+*.elf
+*.bin
+*.map
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.log
+
+# Build directories
+build/
+dist/
+*.o
+*.d
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Node modules (if using any web tools)
+node_modules/
+package-lock.json
+
+# Test output
+test-output/
+test_results/
