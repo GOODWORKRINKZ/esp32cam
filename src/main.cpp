@@ -319,24 +319,27 @@ String getMainPage() {
         }
         .controls {
             padding: 20px;
-            text-align: center;
         }
-        .calibrate-btn {
-            padding: 15px 40px;
-            border: none;
-            border-radius: 5px;
-            background: #4CAF50;
-            color: white;
-            cursor: pointer;
-            font-size: 16px;
+        .control-group {
+            margin: 15px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .control-group label {
+            color: #fff;
+            font-size: 14px;
+            min-width: 120px;
+        }
+        .control-group input[type="range"] {
+            flex: 1;
+            margin: 0 15px;
+        }
+        .control-group .value {
+            color: #4CAF50;
             font-weight: bold;
-            transition: background 0.3s;
-        }
-        .calibrate-btn:hover {
-            background: #45a049;
-        }
-        .calibrate-btn:active {
-            background: #3d8b40;
+            min-width: 50px;
+            text-align: right;
         }
         .status {
             margin-top: 15px;
@@ -371,13 +374,26 @@ String getMainPage() {
             <canvas id="canvas" width="320" height="240"></canvas>
         </div>
         <div class="controls">
-            <button class="calibrate-btn" onclick="calibrate()">🔧 КАЛИБРОВКА</button>
+            <div class="control-group">
+                <label>Порог (Threshold):</label>
+                <input type="range" id="threshold" min="0" max="255" value="128" oninput="updateControl('threshold', this.value)">
+                <span class="value" id="thresholdValue">128</span>
+            </div>
+            <div class="control-group">
+                <label>Яркость (Brightness):</label>
+                <input type="range" id="brightness" min="-2" max="2" value="0" oninput="updateControl('brightness', this.value)">
+                <span class="value" id="brightnessValue">0</span>
+            </div>
+            <div class="control-group">
+                <label>Контраст (Contrast):</label>
+                <input type="range" id="contrast" min="-2" max="2" value="2" oninput="updateControl('contrast', this.value)">
+                <span class="value" id="contrastValue">2</span>
+            </div>
             <div class="status">
                 <div class="status-item">
                     <span class="line-indicator" id="lineIndicator"></span>
                     <span id="lineStatus">Ожидание...</span>
                 </div>
-                <div class="status-item" id="thresholdStatus">Порог: ---</div>
                 <div class="status-item" id="positionStatus">Позиция: ---</div>
             </div>
         </div>
@@ -388,17 +404,15 @@ String getMainPage() {
         const ctx = canvas.getContext('2d');
         let updateInterval;
 
-        function calibrate() {
-            document.getElementById('lineStatus').textContent = 'Калибровка...';
-            fetch('/calibrate')
+        function updateControl(control, value) {
+            document.getElementById(control + 'Value').textContent = value;
+            fetch('/control?name=' + control + '&value=' + value)
                 .then(response => response.text())
                 .then(data => {
-                    console.log('Calibration response:', data);
-                    setTimeout(updateStatus, 500);
+                    console.log(control + ' set to ' + value);
                 })
                 .catch(error => {
-                    console.error('Calibration error:', error);
-                    document.getElementById('lineStatus').textContent = 'Ошибка калибровки';
+                    console.error('Control update error:', error);
                 });
         }
 
@@ -408,7 +422,6 @@ String getMainPage() {
                 .then(data => {
                     const indicator = document.getElementById('lineIndicator');
                     const lineStatus = document.getElementById('lineStatus');
-                    const thresholdStatus = document.getElementById('thresholdStatus');
                     const positionStatus = document.getElementById('positionStatus');
                     
                     if (data.lineDetected) {
@@ -421,8 +434,19 @@ String getMainPage() {
                         positionStatus.textContent = 'Позиция: ---';
                     }
                     
-                    thresholdStatus.textContent = 'Порог: ' + data.threshold + 
-                        (data.invertColors ? ' (инверсия)' : ' (норма)');
+                    // Update control values from server
+                    if (data.threshold !== undefined) {
+                        document.getElementById('threshold').value = data.threshold;
+                        document.getElementById('thresholdValue').textContent = data.threshold;
+                    }
+                    if (data.brightness !== undefined) {
+                        document.getElementById('brightness').value = data.brightness;
+                        document.getElementById('brightnessValue').textContent = data.brightness;
+                    }
+                    if (data.contrast !== undefined) {
+                        document.getElementById('contrast').value = data.contrast;
+                        document.getElementById('contrastValue').textContent = data.contrast;
+                    }
                 })
                 .catch(error => console.error('Status error:', error));
         }
@@ -522,6 +546,31 @@ void setupRoutes() {
     digitalWrite(LED_FLASH, LOW);
   });
 
+  // Control endpoint - handles slider updates
+  server.on("/control", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("name") && request->hasParam("value")) {
+      String name = request->getParam("name")->value();
+      int value = request->getParam("value")->value().toInt();
+      
+      if (name == "threshold") {
+        binaryThreshold = constrain(value, 0, 255);
+        Serial.printf("Threshold updated to: %d\n", binaryThreshold);
+      } else if (name == "brightness") {
+        settings.brightness = constrain(value, -2, 2);
+        applyCameraSettings();
+        Serial.printf("Brightness updated to: %d\n", settings.brightness);
+      } else if (name == "contrast") {
+        settings.contrast = constrain(value, -2, 2);
+        applyCameraSettings();
+        Serial.printf("Contrast updated to: %d\n", settings.contrast);
+      }
+      
+      request->send(200, "text/plain", "OK");
+    } else {
+      request->send(400, "text/plain", "Missing parameters");
+    }
+  });
+
   // Calibration endpoint
   server.on("/calibrate", HTTP_GET, [](AsyncWebServerRequest *request) {
     calibrateCamera();
@@ -532,6 +581,8 @@ void setupRoutes() {
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
     String json = "{";
     json += "\"threshold\":" + String(binaryThreshold) + ",";
+    json += "\"brightness\":" + String(settings.brightness) + ",";
+    json += "\"contrast\":" + String(settings.contrast) + ",";
     json += "\"invertColors\":" + String(invertColors ? "true" : "false") + ",";
     json += "\"lineDetected\":" + String(lineCenterX >= 0 ? "true" : "false") + ",";
     json += "\"lineCenterX\":" + String(lineCenterX);
