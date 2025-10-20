@@ -138,27 +138,52 @@ int detectLine(camera_fb_t* fb) {
     int width = fb->width;
     int height = fb->height;
     
-    // Scan bottom third of image
-    int scanRow = height * 2 / 3;
+    // Scan multiple rows in the middle third for more robust detection
+    int startRow = height / 3;
+    int endRow = (2 * height) / 3;
+    int rowStep = 5; // Sample every 5th row for efficiency
     
-    int darkStart = -1;
-    int darkEnd = -1;
+    int totalDarkStart = 0;
+    int totalDarkEnd = 0;
+    int detectionCount = 0;
     
-    // Find dark line
-    for (int x = 0; x < width; x++) {
-        int idx = scanRow * width + x;
+    // Scan multiple rows
+    for (int row = startRow; row < endRow; row += rowStep) {
+        int darkStart = -1;
+        int darkEnd = -1;
+        bool inDarkLine = false;
         
-        if (pixels[idx] < LINE_THRESHOLD) {
-            if (darkStart == -1) {
+        // Find dark line in this row
+        for (int x = 0; x < width; x++) {
+            int idx = row * width + x;
+            
+            if (!inDarkLine && pixels[idx] < LINE_THRESHOLD) {
                 darkStart = x;
+                inDarkLine = true;
+            } else if (inDarkLine && pixels[idx] >= LINE_THRESHOLD) {
+                darkEnd = x - 1;
+                break;
             }
-            darkEnd = x;
+        }
+        
+        // If still in line at end of row, set end to last pixel
+        if (inDarkLine && darkEnd == -1) {
+            darkEnd = width - 1;
+        }
+        
+        // Validate line width (at least MIN_LINE_WIDTH pixels)
+        if (darkStart != -1 && darkEnd != -1 && (darkEnd - darkStart) >= MIN_LINE_WIDTH) {
+            totalDarkStart += darkStart;
+            totalDarkEnd += darkEnd;
+            detectionCount++;
         }
     }
     
-    // Check if line is wide enough
-    if (darkStart != -1 && (darkEnd - darkStart) >= MIN_LINE_WIDTH) {
-        int lineCenter = (darkStart + darkEnd) / 2;
+    // Calculate average center from all detections
+    if (detectionCount > 0) {
+        int avgDarkStart = totalDarkStart / detectionCount;
+        int avgDarkEnd = totalDarkEnd / detectionCount;
+        int lineCenter = (avgDarkStart + avgDarkEnd) / 2;
         return (lineCenter * 100) / width;  // Convert to percentage
     }
     
