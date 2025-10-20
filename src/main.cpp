@@ -66,6 +66,8 @@ struct CameraSettings {
   int colorbar = 0;    // Color bar test pattern
 } settings;
 
+void applyCameraSettings();
+
 void initCamera() {
   camera_config.ledc_channel = LEDC_CHANNEL_0;
   camera_config.ledc_timer = LEDC_TIMER_0;
@@ -81,8 +83,8 @@ void initCamera() {
   camera_config.pin_pclk = PCLK_GPIO_NUM;
   camera_config.pin_vsync = VSYNC_GPIO_NUM;
   camera_config.pin_href = HREF_GPIO_NUM;
-  camera_config.pin_sscb_sda = SIOD_GPIO_NUM;
-  camera_config.pin_sscb_scl = SIOC_GPIO_NUM;
+  camera_config.pin_sccb_sda = SIOD_GPIO_NUM;
+  camera_config.pin_sccb_scl = SIOC_GPIO_NUM;
   camera_config.pin_pwdn = PWDN_GPIO_NUM;
   camera_config.pin_reset = RESET_GPIO_NUM;
   camera_config.xclk_freq_hz = 20000000;
@@ -517,7 +519,7 @@ void setupRoutes() {
       request->send(500, "text/plain", "Camera capture failed");
       return;
     }
-    AsyncWebServerResponse *response = request->beginResponse_P(200, "image/jpeg", fb->buf, fb->len);
+    AsyncWebServerResponse *response = request->beginResponse(200, "image/jpeg", fb->buf, fb->len);
     response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
     esp_camera_fb_return(fb);
