@@ -37,6 +37,13 @@
 #define LINE_THRESHOLD 128
 #define MIN_LINE_WIDTH 10
 
+// Curve detection variables
+int lineCenterTop = -1;
+int lineCenterMiddle = -1;
+int lineCenterBottom = -1;
+float curveAngle = 0.0;
+bool sharpTurnDetected = false;
+
 void setup() {
     WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
     
@@ -59,16 +66,29 @@ void loop() {
         return;
     }
     
-    // Detect line
-    int position = detectLine(fb);
+    // Detect line with multi-region scanning
+    detectLineMultiRegion(fb);
     
     // Return frame buffer
     esp_camera_fb_return(fb);
     
-    // Output position
-    if (position >= 0) {
-        int deviation = position - 50;  // -50 to +50 from center
-        Serial.printf("Line: %d%% (dev: %+d)\n", position, deviation);
+    // Output position and curve information
+    if (lineCenterBottom >= 0 || lineCenterMiddle >= 0 || lineCenterTop >= 0) {
+        int mainPosition = lineCenterBottom >= 0 ? lineCenterBottom : (lineCenterMiddle >= 0 ? lineCenterMiddle : lineCenterTop);
+        int positionPercent = (mainPosition * 100) / fb->width;
+        int deviation = positionPercent - 50;  // -50 to +50 from center
+        
+        Serial.printf("Line: %d%% (dev: %+d), Angle: %.1f°", positionPercent, deviation, curveAngle);
+        
+        if (sharpTurnDetected) {
+            Serial.print(" SHARP TURN!");
+        }
+        
+        if (abs(curveAngle) > 5) {
+            Serial.printf(" -> %s", curveAngle > 0 ? "RIGHT" : "LEFT");
+        }
+        
+        Serial.println();
     } else {
         Serial.println("No line detected");
     }
@@ -188,4 +208,85 @@ int detectLine(camera_fb_t* fb) {
     }
     
     return -1;  // No line detected
+}
+
+// Enhanced multi-region line detection for curves and sharp turns
+void detectLineInRegion(camera_fb_t* fb, int startRow, int endRow, int& centerX) {
+    uint8_t* pixels = fb->buf;
+    int width = fb->width;
+    int rowStep = 3;
+    
+    int totalDarkStart = 0;
+    int totalDarkEnd = 0;
+    int detectionCount = 0;
+    
+    for (int row = startRow; row < endRow; row += rowStep) {
+        int darkStart = -1;
+        int darkEnd = -1;
+        bool inDarkLine = false;
+        
+        for (int x = 0; x < width; x++) {
+            int idx = row * width + x;
+            
+            if (!inDarkLine && pixels[idx] < LINE_THRESHOLD) {
+                darkStart = x;
+                inDarkLine = true;
+            } else if (inDarkLine && pixels[idx] >= LINE_THRESHOLD) {
+                darkEnd = x - 1;
+                break;
+            }
+        }
+        
+        if (inDarkLine && darkEnd == -1) {
+            darkEnd = width - 1;
+        }
+        
+        if (darkStart != -1 && darkEnd != -1 && (darkEnd - darkStart) >= MIN_LINE_WIDTH) {
+            totalDarkStart += darkStart;
+            totalDarkEnd += darkEnd;
+            detectionCount++;
+        }
+    }
+    
+    if (detectionCount > 0) {
+        int avgDarkStart = totalDarkStart / detectionCount;
+        int avgDarkEnd = totalDarkEnd / detectionCount;
+        centerX = (avgDarkStart + avgDarkEnd) / 2;
+    } else {
+        centerX = -1;
+    }
+}
+
+void detectLineMultiRegion(camera_fb_t* fb) {
+    int height = fb->height;
+    int width = fb->width;
+    
+    // Detect line in three regions
+    int topStart = height / 6;
+    int topEnd = height / 3;
+    detectLineInRegion(fb, topStart, topEnd, lineCenterTop);
+    
+    int middleStart = height / 3;
+    int middleEnd = (2 * height) / 3;
+    detectLineInRegion(fb, middleStart, middleEnd, lineCenterMiddle);
+    
+    int bottomStart = (2 * height) / 3;
+    int bottomEnd = (5 * height) / 6;
+    detectLineInRegion(fb, bottomStart, bottomEnd, lineCenterBottom);
+    
+    // Calculate curve angle
+    curveAngle = 0.0;
+    sharpTurnDetected = false;
+    
+    if (lineCenterBottom >= 0 && lineCenterTop >= 0) {
+        float displacement = lineCenterBottom - lineCenterTop;
+        float verticalDistance = width * 0.4;
+        curveAngle = atan(displacement / verticalDistance) * 180.0 / 3.14159;
+        sharpTurnDetected = (abs(curveAngle) > 30.0);
+    } else if (lineCenterBottom >= 0 && lineCenterMiddle >= 0) {
+        float displacement = lineCenterBottom - lineCenterMiddle;
+        float verticalDistance = width * 0.3;
+        curveAngle = atan(displacement / verticalDistance) * 180.0 / 3.14159;
+        sharpTurnDetected = (abs(curveAngle) > 30.0);
+    }
 }

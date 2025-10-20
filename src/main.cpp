@@ -22,6 +22,14 @@ int binaryThreshold = 128; // Auto-calibrated threshold for 1-bit conversion
 bool invertColors = false; // false = black line on white, true = white line on black
 int lineCenterX = -1; // Detected line center X position (-1 if not detected)
 
+// Curve and turn detection parameters
+int lineCenterTop = -1;    // Line position in top region
+int lineCenterMiddle = -1; // Line position in middle region
+int lineCenterBottom = -1; // Line position in bottom region
+float curveAngle = 0.0;    // Estimated curve angle in degrees
+bool sharpTurnDetected = false; // True if sharp turn (>45°) detected
+String turnDirection = "straight"; // "left", "right", or "straight"
+
 // Camera pins for AI-Thinker ESP32-CAM
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -60,6 +68,8 @@ struct CameraSettings {
 void applyCameraSettings();
 void calibrateCamera();
 void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height);
+void detectLineCenterInRegion(uint8_t* grayscale_buf, size_t width, size_t height, int startRow, int endRow, int& centerX);
+void detectCurveAndTurn(size_t width);
 void convertTo1Bit(uint8_t* grayscale_buf, size_t len);
 
 void initCamera() {
@@ -239,12 +249,9 @@ void calibrateCamera() {
   // digitalWrite(LED_FLASH, LOW);
 }
 
-// Detect line center by scanning from edges across multiple rows
-void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
-  // Scan multiple rows in the middle third of the image for more robust detection
-  int startRow = height / 3;
-  int endRow = (2 * height) / 3;
-  int rowStep = 5; // Sample every 5th row for efficiency
+// Detect line center in a specific region of the image
+void detectLineCenterInRegion(uint8_t* grayscale_buf, size_t width, size_t height, int startRow, int endRow, int& centerX) {
+  int rowStep = 3; // Sample every 3rd row for efficiency
   
   uint8_t lineColor = invertColors ? 255 : 0; // What color the line should be
   uint8_t fieldColor = invertColors ? 0 : 255; // What color the field should be
@@ -252,7 +259,7 @@ void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
   int totalLeftEdge = 0, totalRightEdge = 0;
   int detectionCount = 0;
   
-  // Scan multiple rows
+  // Scan multiple rows in this region
   for (int row = startRow; row < endRow; row += rowStep) {
     int leftEdge = -1, rightEdge = -1;
     bool inLine = false;
@@ -292,13 +299,121 @@ void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
   if (detectionCount > 0) {
     int avgLeftEdge = totalLeftEdge / detectionCount;
     int avgRightEdge = totalRightEdge / detectionCount;
-    lineCenterX = (avgLeftEdge + avgRightEdge) / 2;
-    int lineWidth = avgRightEdge - avgLeftEdge;
-    Serial.printf("Line detected: center=%d, width=%d pixels (from %d rows)\n", 
-                  lineCenterX, lineWidth, detectionCount);
+    centerX = (avgLeftEdge + avgRightEdge) / 2;
+  } else {
+    centerX = -1;
+  }
+}
+
+// Enhanced line detection with multi-region scanning for curves and turns
+void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
+  // Divide image into three regions: top (far), middle, and bottom (near)
+  // This allows detection of curves by comparing line position across regions
+  
+  int topStart = height / 6;           // Top region: 1/6 to 1/3 of height (far ahead)
+  int topEnd = height / 3;
+  
+  int middleStart = height / 3;        // Middle region: 1/3 to 2/3 of height
+  int middleEnd = (2 * height) / 3;
+  
+  int bottomStart = (2 * height) / 3;  // Bottom region: 2/3 to 5/6 of height (close to robot)
+  int bottomEnd = (5 * height) / 6;
+  
+  // Detect line in each region
+  detectLineCenterInRegion(grayscale_buf, width, height, topStart, topEnd, lineCenterTop);
+  detectLineCenterInRegion(grayscale_buf, width, height, middleStart, middleEnd, lineCenterMiddle);
+  detectLineCenterInRegion(grayscale_buf, width, height, bottomStart, bottomEnd, lineCenterBottom);
+  
+  // Use bottom region as primary detection (closest to robot, most reliable)
+  // Fall back to middle, then top if bottom is not detected
+  if (lineCenterBottom >= 0) {
+    lineCenterX = lineCenterBottom;
+  } else if (lineCenterMiddle >= 0) {
+    lineCenterX = lineCenterMiddle;
+  } else if (lineCenterTop >= 0) {
+    lineCenterX = lineCenterTop;
   } else {
     lineCenterX = -1;
-    Serial.println("No line detected");
+  }
+  
+  // Detect curves and turns based on multi-region data
+  detectCurveAndTurn(width);
+  
+  // Debug output
+  if (lineCenterX >= 0) {
+    Serial.printf("Line detected: center=%d (T:%d M:%d B:%d), angle=%.1f°, turn=%s\n", 
+                  lineCenterX, lineCenterTop, lineCenterMiddle, lineCenterBottom,
+                  curveAngle, turnDirection.c_str());
+  } else {
+    Serial.println("No line detected in any region");
+  }
+}
+
+// Analyze line positions across regions to detect curves and calculate turn angle
+void detectCurveAndTurn(size_t width) {
+  // Reset detection state
+  curveAngle = 0.0;
+  sharpTurnDetected = false;
+  turnDirection = "straight";
+  
+  // Need at least 2 regions detected to calculate curve
+  int regionsDetected = 0;
+  if (lineCenterTop >= 0) regionsDetected++;
+  if (lineCenterMiddle >= 0) regionsDetected++;
+  if (lineCenterBottom >= 0) regionsDetected++;
+  
+  if (regionsDetected < 2) {
+    // Not enough data to determine curve
+    return;
+  }
+  
+  // Calculate horizontal displacement between regions
+  // Positive displacement = line curves to the right
+  // Negative displacement = line curves to the left
+  float displacement = 0.0;
+  int validComparisons = 0;
+  
+  // Compare bottom to middle
+  if (lineCenterBottom >= 0 && lineCenterMiddle >= 0) {
+    displacement += (lineCenterTop >= 0 ? lineCenterMiddle : lineCenterBottom) - lineCenterMiddle;
+    validComparisons++;
+  }
+  
+  // Compare middle to top
+  if (lineCenterMiddle >= 0 && lineCenterTop >= 0) {
+    displacement += lineCenterMiddle - lineCenterTop;
+    validComparisons++;
+  }
+  
+  // Compare bottom to top (for sharp turns)
+  if (lineCenterBottom >= 0 && lineCenterTop >= 0) {
+    displacement += (lineCenterBottom - lineCenterTop) * 0.5; // Weight this less
+    validComparisons++;
+  }
+  
+  if (validComparisons > 0) {
+    displacement /= validComparisons;
+    
+    // Calculate approximate angle
+    // Assuming vertical distance between regions is ~40% of image height
+    // angle ≈ arctan(horizontal_displacement / vertical_distance)
+    float verticalDistance = width * 0.4; // Approximation based on typical FOV
+    curveAngle = atan(displacement / verticalDistance) * 180.0 / 3.14159;
+    
+    // Determine turn direction
+    if (abs(displacement) < width * 0.05) {
+      // Less than 5% displacement = straight
+      turnDirection = "straight";
+      sharpTurnDetected = false;
+    } else if (displacement > 0) {
+      // Line curves to the right
+      turnDirection = "right";
+      sharpTurnDetected = (abs(curveAngle) > 30.0); // Sharp turn if > 30°
+    } else {
+      // Line curves to the left
+      turnDirection = "left";
+      sharpTurnDetected = (abs(curveAngle) > 30.0); // Sharp turn if > 30°
+    }
   }
 }
 
@@ -444,6 +559,8 @@ String getMainPage() {
                     <span id="lineStatus">Ожидание...</span>
                 </div>
                 <div class="status-item" id="positionStatus">Позиция: ---</div>
+                <div class="status-item" id="curveStatus">Поворот: ---</div>
+                <div class="status-item" id="angleStatus">Угол: ---</div>
             </div>
         </div>
     </div>
@@ -486,15 +603,34 @@ String getMainPage() {
                     const indicator = document.getElementById('lineIndicator');
                     const lineStatus = document.getElementById('lineStatus');
                     const positionStatus = document.getElementById('positionStatus');
+                    const curveStatus = document.getElementById('curveStatus');
+                    const angleStatus = document.getElementById('angleStatus');
                     
                     if (data.lineDetected) {
                         indicator.className = 'line-indicator line-detected';
                         lineStatus.textContent = 'Линия обнаружена!';
                         positionStatus.textContent = 'Позиция: ' + data.lineCenterX + ' px';
+                        
+                        // Display turn information
+                        let turnText = 'прямо';
+                        if (data.turnDirection === 'left') {
+                            turnText = '⬅️ влево';
+                        } else if (data.turnDirection === 'right') {
+                            turnText = '➡️ вправо';
+                        }
+                        
+                        if (data.sharpTurn) {
+                            turnText += ' (резкий!)';
+                        }
+                        
+                        curveStatus.textContent = 'Поворот: ' + turnText;
+                        angleStatus.textContent = 'Угол: ' + data.curveAngle + '°';
                     } else {
                         indicator.className = 'line-indicator line-not-detected';
                         lineStatus.textContent = 'Линия не обнаружена';
                         positionStatus.textContent = 'Позиция: ---';
+                        curveStatus.textContent = 'Поворот: ---';
+                        angleStatus.textContent = 'Угол: ---';
                     }
                     
                     // Update control values from server
@@ -577,18 +713,62 @@ void setupRoutes() {
     // Detect line center
     detectLineCenter(fb->buf, fb->width, fb->height);
     
-    // Draw line indicator if detected
-    if (lineCenterX >= 0 && lineCenterX < fb->width) {
-      int midRow = fb->height / 2;
-      // Draw a vertical line at detected center (5 pixels wide)
-      for (int y = 0; y < fb->height; y++) {
+    // Draw detection indicators for all three regions if detected
+    // Bottom region (close) - red/inverted line
+    if (lineCenterBottom >= 0 && lineCenterBottom < fb->width) {
+      int bottomRow = (2 * fb->height) / 3;
+      for (int y = bottomRow; y < (5 * fb->height) / 6; y++) {
         for (int dx = -2; dx <= 2; dx++) {
-          int x = lineCenterX + dx;
+          int x = lineCenterBottom + dx;
           if (x >= 0 && x < fb->width) {
-            // Invert pixel at line center to make it visible
             int idx = y * fb->width + x;
             fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
           }
+        }
+      }
+    }
+    
+    // Middle region - red/inverted line
+    if (lineCenterMiddle >= 0 && lineCenterMiddle < fb->width) {
+      int middleRow = fb->height / 2;
+      for (int y = fb->height / 3; y < (2 * fb->height) / 3; y++) {
+        for (int dx = -1; dx <= 1; dx++) {
+          int x = lineCenterMiddle + dx;
+          if (x >= 0 && x < fb->width) {
+            int idx = y * fb->width + x;
+            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
+          }
+        }
+      }
+    }
+    
+    // Top region (far ahead) - red/inverted line
+    if (lineCenterTop >= 0 && lineCenterTop < fb->width) {
+      for (int y = fb->height / 6; y < fb->height / 3; y++) {
+        for (int dx = -1; dx <= 1; dx++) {
+          int x = lineCenterTop + dx;
+          if (x >= 0 && x < fb->width) {
+            int idx = y * fb->width + x;
+            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
+          }
+        }
+      }
+    }
+    
+    // Draw connecting line between detected regions to visualize curve
+    if (lineCenterBottom >= 0 && lineCenterTop >= 0) {
+      // Simple line drawing between bottom and top
+      int startY = (5 * fb->height) / 6;
+      int endY = fb->height / 6;
+      int startX = lineCenterBottom;
+      int endX = lineCenterTop;
+      
+      for (int y = endY; y < startY; y += 3) {
+        float t = (float)(y - endY) / (startY - endY);
+        int x = startX + (int)(t * (endX - startX));
+        if (x >= 0 && x < fb->width && y >= 0 && y < fb->height) {
+          int idx = y * fb->width + x;
+          fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
         }
       }
     }
@@ -648,7 +828,13 @@ void setupRoutes() {
     json += "\"contrast\":" + String(settings.contrast) + ",";
     json += "\"invertColors\":" + String(invertColors ? "true" : "false") + ",";
     json += "\"lineDetected\":" + String(lineCenterX >= 0 ? "true" : "false") + ",";
-    json += "\"lineCenterX\":" + String(lineCenterX);
+    json += "\"lineCenterX\":" + String(lineCenterX) + ",";
+    json += "\"lineCenterTop\":" + String(lineCenterTop) + ",";
+    json += "\"lineCenterMiddle\":" + String(lineCenterMiddle) + ",";
+    json += "\"lineCenterBottom\":" + String(lineCenterBottom) + ",";
+    json += "\"curveAngle\":" + String(curveAngle, 1) + ",";
+    json += "\"sharpTurn\":" + String(sharpTurnDetected ? "true" : "false") + ",";
+    json += "\"turnDirection\":\"" + turnDirection + "\"";
     json += "}";
     request->send(200, "application/json", json);
   });

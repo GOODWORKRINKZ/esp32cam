@@ -45,6 +45,13 @@
 #define LINE_THRESHOLD    128
 #define MIN_LINE_WIDTH    10
 
+// Curve detection variables
+int lineCenterTop = -1;
+int lineCenterMiddle = -1;
+int lineCenterBottom = -1;
+float curveAngle = 0.0;
+bool sharpTurnDetected = false;
+
 // Motor control parameters
 #define BASE_SPEED        150    // Base PWM speed (0-255)
 #define MAX_SPEED         255
@@ -109,12 +116,22 @@ void loop() {
         return;
     }
     
-    // Detect line position
-    int position = detectLine(fb);
+    // Detect line position with multi-region scanning
+    detectLineMultiRegion(fb);
     esp_camera_fb_return(fb);
     
+    // Determine main position (prefer bottom, then middle, then top)
+    int mainPosition = -1;
+    if (lineCenterBottom >= 0) {
+        mainPosition = (lineCenterBottom * 100) / fb->width;
+    } else if (lineCenterMiddle >= 0) {
+        mainPosition = (lineCenterMiddle * 100) / fb->width;
+    } else if (lineCenterTop >= 0) {
+        mainPosition = (lineCenterTop * 100) / fb->width;
+    }
+    
     // Update robot behavior based on detection
-    if (position >= 0) {
+    if (mainPosition >= 0) {
         // Line detected
         if (state != FOLLOWING) {
             Serial.println("Line found! Resuming following...");
@@ -122,16 +139,31 @@ void loop() {
         }
         
         // Calculate error (deviation from center)
-        float error = position - 50.0;  // Center is at 50%
+        float error = mainPosition - 50.0;  // Center is at 50%
         
-        // PID control
-        float control = calculatePID(error);
+        // Adjust PID gains based on curve detection
+        float currentKp = Kp;
+        float currentKd = Kd;
+        
+        if (sharpTurnDetected) {
+            // Increase response for sharp turns
+            currentKp = Kp * 1.5;
+            currentKd = Kd * 1.2;
+            Serial.print("SHARP TURN! ");
+        } else if (abs(curveAngle) > 10) {
+            // Moderate increase for gentle curves
+            currentKp = Kp * 1.2;
+            currentKd = Kd * 1.1;
+        }
+        
+        // PID control with adjusted gains
+        float control = calculatePID(error, currentKp, currentKd);
         
         // Apply motor control
         setMotorSpeeds(control);
         
-        Serial.printf("Pos: %d%%, Error: %.1f, Control: %.1f\n", 
-                      position, error, control);
+        Serial.printf("Pos: %d%%, Error: %.1f, Angle: %.1f°, Control: %.1f\n", 
+                      mainPosition, error, curveAngle, control);
     } else {
         // Line lost - enter search mode
         handleLineLost();
@@ -246,16 +278,98 @@ int detectLine(camera_fb_t* fb) {
     return -1;
 }
 
-float calculatePID(float error) {
+// Enhanced multi-region line detection for curves and sharp turns
+void detectLineInRegion(camera_fb_t* fb, int startRow, int endRow, int& centerX) {
+    uint8_t* pixels = fb->buf;
+    int width = fb->width;
+    int rowStep = 3;
+    
+    int totalDarkStart = 0;
+    int totalDarkEnd = 0;
+    int detectionCount = 0;
+    
+    for (int row = startRow; row < endRow; row += rowStep) {
+        int darkStart = -1;
+        int darkEnd = -1;
+        bool inDarkLine = false;
+        
+        for (int x = 0; x < width; x++) {
+            int idx = row * width + x;
+            
+            if (!inDarkLine && pixels[idx] < LINE_THRESHOLD) {
+                darkStart = x;
+                inDarkLine = true;
+            } else if (inDarkLine && pixels[idx] >= LINE_THRESHOLD) {
+                darkEnd = x - 1;
+                break;
+            }
+        }
+        
+        if (inDarkLine && darkEnd == -1) {
+            darkEnd = width - 1;
+        }
+        
+        if (darkStart != -1 && darkEnd != -1 && (darkEnd - darkStart) >= MIN_LINE_WIDTH) {
+            totalDarkStart += darkStart;
+            totalDarkEnd += darkEnd;
+            detectionCount++;
+        }
+    }
+    
+    if (detectionCount > 0) {
+        int avgDarkStart = totalDarkStart / detectionCount;
+        int avgDarkEnd = totalDarkEnd / detectionCount;
+        centerX = (avgDarkStart + avgDarkEnd) / 2;
+    } else {
+        centerX = -1;
+    }
+}
+
+void detectLineMultiRegion(camera_fb_t* fb) {
+    int height = fb->height;
+    int width = fb->width;
+    
+    // Detect line in three regions for curve detection
+    int topStart = height / 6;
+    int topEnd = height / 3;
+    detectLineInRegion(fb, topStart, topEnd, lineCenterTop);
+    
+    int middleStart = height / 3;
+    int middleEnd = (2 * height) / 3;
+    detectLineInRegion(fb, middleStart, middleEnd, lineCenterMiddle);
+    
+    int bottomStart = (2 * height) / 3;
+    int bottomEnd = (5 * height) / 6;
+    detectLineInRegion(fb, bottomStart, bottomEnd, lineCenterBottom);
+    
+    // Calculate curve angle
+    curveAngle = 0.0;
+    sharpTurnDetected = false;
+    
+    // Calculate curve based on position differences
+    if (lineCenterBottom >= 0 && lineCenterTop >= 0) {
+        float displacement = lineCenterBottom - lineCenterTop;
+        float verticalDistance = width * 0.4;
+        curveAngle = atan(displacement / verticalDistance) * 180.0 / 3.14159;
+        sharpTurnDetected = (abs(curveAngle) > 30.0);
+    } else if (lineCenterBottom >= 0 && lineCenterMiddle >= 0) {
+        float displacement = lineCenterBottom - lineCenterMiddle;
+        float verticalDistance = width * 0.3;
+        curveAngle = atan(displacement / verticalDistance) * 180.0 / 3.14159;
+        sharpTurnDetected = (abs(curveAngle) > 30.0);
+    }
+}
+
+float calculatePID(float error, float kp = Kp, float kd = Kd) {
     // Proportional term
-    float P = Kp * error;
+    float P = kp * error;
     
     // Integral term (usually not needed for line following)
     integral += error;
     float I = Ki * integral;
     
     // Derivative term
-    float D = Kd * (error - previousError);
+    float D = kd * (error - previousError);
     
     // Calculate control output
     float control = P + I + D;
