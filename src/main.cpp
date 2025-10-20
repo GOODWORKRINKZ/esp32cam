@@ -375,7 +375,7 @@ void detectCurveAndTurn(size_t width) {
   
   // Compare bottom to middle
   if (lineCenterBottom >= 0 && lineCenterMiddle >= 0) {
-    displacement += (lineCenterTop >= 0 ? lineCenterMiddle : lineCenterBottom) - lineCenterMiddle;
+    displacement += lineCenterBottom - lineCenterMiddle;
     validComparisons++;
   }
   
@@ -401,18 +401,18 @@ void detectCurveAndTurn(size_t width) {
     curveAngle = atan(displacement / verticalDistance) * 180.0 / 3.14159;
     
     // Determine turn direction
-    if (abs(displacement) < width * 0.05) {
+    if (fabs(displacement) < width * 0.05) {
       // Less than 5% displacement = straight
       turnDirection = "straight";
       sharpTurnDetected = false;
     } else if (displacement > 0) {
       // Line curves to the right
       turnDirection = "right";
-      sharpTurnDetected = (abs(curveAngle) > 30.0); // Sharp turn if > 30°
+      sharpTurnDetected = (fabs(curveAngle) > 30.0); // Sharp turn if > 30°
     } else {
       // Line curves to the left
       turnDirection = "left";
-      sharpTurnDetected = (abs(curveAngle) > 30.0); // Sharp turn if > 30°
+      sharpTurnDetected = (fabs(curveAngle) > 30.0); // Sharp turn if > 30°
     }
   }
 }
