@@ -239,35 +239,63 @@ void calibrateCamera() {
   // digitalWrite(LED_FLASH, LOW);
 }
 
-// Detect line center by scanning from edges
+// Detect line center by scanning from edges across multiple rows
 void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
-  // Scan middle row from left and right to find line edges
-  int midRow = height / 2;
-  int leftEdge = -1, rightEdge = -1;
+  // Scan multiple rows in the middle third of the image for more robust detection
+  int startRow = height / 3;
+  int endRow = (2 * height) / 3;
+  int rowStep = 5; // Sample every 5th row for efficiency
   
   uint8_t lineColor = invertColors ? 255 : 0; // What color the line should be
+  uint8_t fieldColor = invertColors ? 0 : 255; // What color the field should be
   
-  // Scan from left
-  for (int x = 0; x < width; x++) {
-    if (grayscale_buf[midRow * width + x] == lineColor) {
-      leftEdge = x;
-      break;
+  int totalLeftEdge = 0, totalRightEdge = 0;
+  int detectionCount = 0;
+  
+  // Scan multiple rows
+  for (int row = startRow; row < endRow; row += rowStep) {
+    int leftEdge = -1, rightEdge = -1;
+    bool inLine = false;
+    
+    // Scan from left to find line start (transition from field to line)
+    for (int x = 0; x < width; x++) {
+      uint8_t pixel = grayscale_buf[row * width + x];
+      if (!inLine && pixel == lineColor) {
+        leftEdge = x;
+        inLine = true;
+      } else if (inLine && pixel == fieldColor) {
+        // Found end of line
+        rightEdge = x - 1;
+        break;
+      }
+    }
+    
+    // If we didn't find the end, scan from right
+    if (inLine && rightEdge == -1) {
+      for (int x = width - 1; x >= 0; x--) {
+        if (grayscale_buf[row * width + x] == lineColor) {
+          rightEdge = x;
+          break;
+        }
+      }
+    }
+    
+    // Validate detection (line should be at least 5 pixels wide)
+    if (leftEdge != -1 && rightEdge != -1 && (rightEdge - leftEdge) >= 5) {
+      totalLeftEdge += leftEdge;
+      totalRightEdge += rightEdge;
+      detectionCount++;
     }
   }
   
-  // Scan from right
-  for (int x = width - 1; x >= 0; x--) {
-    if (grayscale_buf[midRow * width + x] == lineColor) {
-      rightEdge = x;
-      break;
-    }
-  }
-  
-  // Calculate center
-  if (leftEdge != -1 && rightEdge != -1 && rightEdge > leftEdge) {
-    lineCenterX = (leftEdge + rightEdge) / 2;
-    int lineWidth = rightEdge - leftEdge;
-    Serial.printf("Line detected: center=%d, width=%d pixels\n", lineCenterX, lineWidth);
+  // Calculate average center from all detections
+  if (detectionCount > 0) {
+    int avgLeftEdge = totalLeftEdge / detectionCount;
+    int avgRightEdge = totalRightEdge / detectionCount;
+    lineCenterX = (avgLeftEdge + avgRightEdge) / 2;
+    int lineWidth = avgRightEdge - avgLeftEdge;
+    Serial.printf("Line detected: center=%d, width=%d pixels (from %d rows)\n", 
+                  lineCenterX, lineWidth, detectionCount);
   } else {
     lineCenterX = -1;
     Serial.println("No line detected");
@@ -364,6 +392,24 @@ String getMainPage() {
         }
         .line-detected { background: #4CAF50; }
         .line-not-detected { background: #f44336; }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            margin: 10px 0;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:active {
+            background: #3d8b40;
+        }
     </style>
 </head>
 <body>
@@ -376,6 +422,7 @@ String getMainPage() {
             <canvas id="canvas" width="320" height="240"></canvas>
         </div>
         <div class="controls">
+            <button onclick="calibrate()">🎯 КАЛИБРОВКА</button>
             <div class="control-group">
                 <label>Порог (Threshold):</label>
                 <input type="range" id="threshold" min="0" max="255" value="128" oninput="updateControl('threshold', this.value)">
@@ -405,6 +452,20 @@ String getMainPage() {
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         let updateInterval;
+
+        function calibrate() {
+            document.getElementById('lineStatus').textContent = 'Калибровка...';
+            fetch('/calibrate')
+                .then(response => response.text())
+                .then(data => {
+                    console.log('Calibration complete');
+                    setTimeout(updateStatus, 1000); // Update status after calibration
+                })
+                .catch(error => {
+                    console.error('Calibration error:', error);
+                    document.getElementById('lineStatus').textContent = 'Ошибка калибровки';
+                });
+        }
 
         function updateControl(control, value) {
             document.getElementById(control + 'Value').textContent = value;
