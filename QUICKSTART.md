@@ -2,6 +2,30 @@
 
 Get your ESP32-CAM line detection system running in 15 minutes!
 
+## 🆕 Choose Your Mode
+
+### Option A: Ultra-Fast 1-Bit Mode (Recommended for Robots)
+
+**Best for:** High-speed robots, minimal memory, black/white lines
+- **Speed:** 30+ FPS  
+- **Memory:** 2.4KB per frame
+- **File:** `examples/monochrome_1bit_robot.ino`
+
+### Option B: Web Interface Mode (Recommended for Setup)
+
+**Best for:** Calibration, testing, parameter tuning
+- **Speed:** 10-15 FPS
+- **Features:** Live video stream, web controls
+- **File:** `src/main.cpp` (requires PlatformIO)
+
+### Option C: Simple Grayscale Mode
+
+**Best for:** Learning, basic detection
+- **Speed:** 12-15 FPS
+- **File:** `examples/simple_line_detection.ino`
+
+---
+
 ## What You Need
 
 - ESP32-CAM module

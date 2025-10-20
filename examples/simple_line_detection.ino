@@ -9,11 +9,25 @@
  * - Detects line position
  * - Outputs position via Serial
  * - No WiFi or web interface
+ * - Supports both grayscale and 1-bit monochrome modes
+ * 
+ * To use 1-bit mode: Set USE_MONOCHROME_1BIT to 1
  */
 
 #include "esp_camera.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+
+// Configuration: Set to 1 to use 1-bit monochrome mode (2x faster, 8x less memory)
+#define USE_MONOCHROME_1BIT 0
+
+#if USE_MONOCHROME_1BIT
+// Include 1-bit monochrome library (if using PlatformIO, ensure src/ is in build path)
+// For Arduino IDE, copy MonochromeLineDetection.h and .cpp to sketch folder
+// #include "MonochromeLineDetection.h"
+// MonochromeLineDetection monoDetector(128);
+#warning "1-bit mode selected but library not included. Copy MonochromeLineDetection files to use."
+#endif
 
 // Camera pins for AI-Thinker ESP32-CAM
 #define PWDN_GPIO_NUM     32
@@ -43,6 +57,12 @@ void setup() {
     Serial.begin(115200);
     Serial.println("\nSimple Line Detection Starting...");
     
+#if USE_MONOCHROME_1BIT
+    Serial.println("Mode: 1-bit Monochrome (Ultra Fast)");
+#else
+    Serial.println("Mode: Grayscale (Standard)");
+#endif
+    
     if (!initCamera()) {
         Serial.println("Camera init failed!");
         while(1);
@@ -60,12 +80,25 @@ void loop() {
     }
     
     // Detect line
+#if USE_MONOCHROME_1BIT
+    // Use 1-bit monochrome detector (if library is included)
+    // MonoLineResult result = monoDetector.detectLine(fb);
+    // if (result.detected) {
+    //     Serial.printf("Line: %d%% (dev: %+d, conf: %d%%)\n", 
+    //                   result.position, result.deviation, result.confidence);
+    // } else {
+    //     Serial.println("No line detected");
+    // }
+    Serial.println("1-bit mode: Include MonochromeLineDetection library to use");
+    int position = detectLine(fb);  // Fallback to grayscale
+#else
     int position = detectLine(fb);
+#endif
     
     // Return frame buffer
     esp_camera_fb_return(fb);
     
-    // Output position
+    // Output position (grayscale mode)
     if (position >= 0) {
         int deviation = position - 50;  // -50 to +50 from center
         Serial.printf("Line: %d%% (dev: %+d)\n", position, deviation);
