@@ -693,8 +693,8 @@ String getMainPage() {
 <body>
     <div class="container">
         <div class="header">
-            <h1>⚫⚪ 1-Bit Line Detector</h1>
-            <p>ESP32-CAM Binary Line Tracking</p>
+            <h1>⚫⚪ 4-Line Scanner Detector</h1>
+            <p>ESP32-CAM Binary Line Tracking (96x96 Fast Mode)</p>
         </div>
         <div class="camera-view">
             <canvas id="canvas" width="96" height="96"></canvas>
@@ -876,12 +876,34 @@ void setupRoutes() {
     // Detect line center
     detectLineCenter(fb->buf, fb->width, fb->height);
     
-    // Draw detection indicators for all three regions if detected
-    // Bottom region (close) - red/inverted line
+    // Visualize scanning lines (4 horizontal lines with 5-pixel offset)
+    const int EDGE_OFFSET = 5;
+    int scanlines[4];
+    scanlines[0] = EDGE_OFFSET;                    // Top scanline
+    scanlines[1] = fb->height / 3;                  // Upper-middle scanline
+    scanlines[2] = (2 * fb->height) / 3;           // Lower-middle scanline
+    scanlines[3] = fb->height - EDGE_OFFSET - 1;   // Bottom scanline
+    
+    // Draw scanning lines in inverted color
+    for (int i = 0; i < 4; i++) {
+      int row = scanlines[i];
+      if (row >= 0 && row < fb->height) {
+        for (int x = 0; x < fb->width; x++) {
+          int idx = row * fb->width + x;
+          // Invert every 3rd pixel to make a dotted line
+          if (x % 3 == 0) {
+            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
+          }
+        }
+      }
+    }
+    
+    // Draw detection indicators for detected line centers
+    // Bottom region (close) - vertical line in inverted color
     if (lineCenterBottom >= 0 && lineCenterBottom < fb->width) {
       int bottomRow = (2 * fb->height) / 3;
-      for (int y = bottomRow; y < (5 * fb->height) / 6; y++) {
-        for (int dx = -2; dx <= 2; dx++) {
+      for (int y = bottomRow; y < fb->height - EDGE_OFFSET; y++) {
+        for (int dx = -1; dx <= 1; dx++) {
           int x = lineCenterBottom + dx;
           if (x >= 0 && x < fb->width) {
             int idx = y * fb->width + x;
@@ -891,29 +913,24 @@ void setupRoutes() {
       }
     }
     
-    // Middle region - red/inverted line
+    // Middle region - vertical line in inverted color
     if (lineCenterMiddle >= 0 && lineCenterMiddle < fb->width) {
-      int middleRow = fb->height / 2;
       for (int y = fb->height / 3; y < (2 * fb->height) / 3; y++) {
-        for (int dx = -1; dx <= 1; dx++) {
-          int x = lineCenterMiddle + dx;
-          if (x >= 0 && x < fb->width) {
-            int idx = y * fb->width + x;
-            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
-          }
+        int x = lineCenterMiddle;
+        if (x >= 0 && x < fb->width) {
+          int idx = y * fb->width + x;
+          fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
         }
       }
     }
     
-    // Top region (far ahead) - red/inverted line
+    // Top region (far ahead) - vertical line in inverted color
     if (lineCenterTop >= 0 && lineCenterTop < fb->width) {
-      for (int y = fb->height / 6; y < fb->height / 3; y++) {
-        for (int dx = -1; dx <= 1; dx++) {
-          int x = lineCenterTop + dx;
-          if (x >= 0 && x < fb->width) {
-            int idx = y * fb->width + x;
-            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
-          }
+      for (int y = EDGE_OFFSET; y < fb->height / 3; y++) {
+        int x = lineCenterTop;
+        if (x >= 0 && x < fb->width) {
+          int idx = y * fb->width + x;
+          fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
         }
       }
     }
@@ -921,12 +938,12 @@ void setupRoutes() {
     // Draw connecting line between detected regions to visualize curve
     if (lineCenterBottom >= 0 && lineCenterTop >= 0) {
       // Simple line drawing between bottom and top
-      int startY = (5 * fb->height) / 6;
-      int endY = fb->height / 6;
+      int startY = fb->height - EDGE_OFFSET - 1;
+      int endY = EDGE_OFFSET;
       int startX = lineCenterBottom;
       int endX = lineCenterTop;
       
-      for (int y = endY; y < startY; y += 3) {
+      for (int y = endY; y < startY; y += 2) {
         float t = (float)(y - endY) / (startY - endY);
         int x = startX + (int)(t * (endX - startX));
         if (x >= 0 && x < fb->width && y >= 0 && y < fb->height) {
