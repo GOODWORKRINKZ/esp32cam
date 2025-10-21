@@ -22,6 +22,10 @@ int binaryThreshold = 128; // Auto-calibrated threshold for 1-bit conversion
 bool invertColors = false; // false = black line on white, true = white line on black
 int lineCenterX = -1; // Detected line center X position (-1 if not detected)
 
+// Line width constants (distance from camera to field is constant)
+const int EXPECTED_LINE_WIDTH = 12; // Expected line width in pixels at 96x96 resolution
+const int LINE_WIDTH_THRESHOLD = 4; // Tolerance for line width detection (±4 pixels)
+
 // Curve and turn detection parameters
 int lineCenterTop = -1;    // Line position in top region
 int lineCenterMiddle = -1; // Line position in middle region
@@ -55,7 +59,7 @@ sensor_t * s = NULL;
 // Simple camera settings for minimal grayscale capture
 // FIXED: Settings with fixed/manual values to prevent auto-adjustment
 struct CameraSettings {
-  int framesize = 5;   // FRAMESIZE_QVGA (320x240) - minimal for fast processing
+  int framesize = 0;   // FRAMESIZE_96X96 (96x96) - ultra fast processing
   int brightness = 0;  // -2 to 2
   int contrast = 2;    // -2 to 2, maximum contrast for line detection
   int saturation = -2; // -2 to 2, lowest for B&W
@@ -68,9 +72,28 @@ struct CameraSettings {
 void applyCameraSettings();
 void calibrateCamera();
 void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height);
-void detectLineCenterInRegion(uint8_t* grayscale_buf, size_t width, size_t height, int startRow, int endRow, int& centerX);
+void detectLineCenterWithScanlines(uint8_t* grayscale_buf, size_t width, size_t height);
 void detectCurveAndTurn(size_t width);
 void convertTo1Bit(uint8_t* grayscale_buf, size_t len);
+
+// Scanning line analysis result
+enum ScanlineState {
+  SCANLINE_WHITE,      // Completely white (no line)
+  SCANLINE_BLACK,      // Completely black (on the line)
+  SCANLINE_CROSSED,    // Crossed by line (transition found)
+  SCANLINE_UNDEFINED   // Unable to determine
+};
+
+struct ScanlineResult {
+  ScanlineState state;
+  int transitionStart; // Where line starts (for CROSSED state)
+  int transitionEnd;   // Where line ends (for CROSSED state)
+  int blackPixelCount; // Count of black pixels
+};
+
+// Analyze a single horizontal scanline
+ScanlineResult analyzeScanline(uint8_t* grayscale_buf, size_t width, int row);
+
 
 void initCamera() {
   camera_config.ledc_channel = LEDC_CHANNEL_0;
@@ -249,91 +272,226 @@ void calibrateCamera() {
   // digitalWrite(LED_FLASH, LOW);
 }
 
-// Detect line center in a specific region of the image
-void detectLineCenterInRegion(uint8_t* grayscale_buf, size_t width, size_t height, int startRow, int endRow, int& centerX) {
-  int rowStep = 3; // Sample every 3rd row for efficiency
+// Analyze a single horizontal scanline
+ScanlineResult analyzeScanline(uint8_t* grayscale_buf, size_t width, int row) {
+  ScanlineResult result;
+  result.state = SCANLINE_UNDEFINED;
+  result.transitionStart = -1;
+  result.transitionEnd = -1;
+  result.blackPixelCount = 0;
   
   uint8_t lineColor = invertColors ? 255 : 0; // What color the line should be
-  uint8_t fieldColor = invertColors ? 0 : 255; // What color the field should be
   
-  int totalLeftEdge = 0, totalRightEdge = 0;
-  int detectionCount = 0;
+  int firstBlackPixel = -1;
+  int lastBlackPixel = -1;
+  bool inLine = false;
+  int transitionCount = 0; // Count how many times we transition
   
-  // Scan multiple rows in this region
-  for (int row = startRow; row < endRow; row += rowStep) {
-    int leftEdge = -1, rightEdge = -1;
-    bool inLine = false;
+  // Scan the entire row
+  for (int x = 0; x < width; x++) {
+    uint8_t pixel = grayscale_buf[row * width + x];
     
-    // Scan from left to find line start (transition from field to line)
-    for (int x = 0; x < width; x++) {
-      uint8_t pixel = grayscale_buf[row * width + x];
-      if (!inLine && pixel == lineColor) {
-        leftEdge = x;
-        inLine = true;
-      } else if (inLine && pixel == fieldColor) {
-        // Found end of line
-        rightEdge = x - 1;
-        break;
+    if (pixel == lineColor) {
+      result.blackPixelCount++;
+      
+      if (firstBlackPixel == -1) {
+        firstBlackPixel = x;
       }
-    }
-    
-    // If we didn't find the end, scan from right
-    if (inLine && rightEdge == -1) {
-      for (int x = width - 1; x >= 0; x--) {
-        if (grayscale_buf[row * width + x] == lineColor) {
-          rightEdge = x;
-          break;
+      lastBlackPixel = x;
+      
+      if (!inLine) {
+        inLine = true;
+        transitionCount++;
+        if (result.transitionStart == -1) {
+          result.transitionStart = x;
+        }
+      }
+    } else {
+      if (inLine) {
+        inLine = false;
+        if (result.transitionEnd == -1) {
+          result.transitionEnd = lastBlackPixel;
         }
       }
     }
+  }
+  
+  // Determine the state of the scanline
+  float blackRatio = (float)result.blackPixelCount / width;
+  
+  if (blackRatio < 0.05) {
+    // Less than 5% black pixels - completely white
+    result.state = SCANLINE_WHITE;
+  } else if (blackRatio > 0.95) {
+    // More than 95% black pixels - completely black (on the line)
+    result.state = SCANLINE_BLACK;
+  } else if (firstBlackPixel != -1 && lastBlackPixel != -1) {
+    // Check if it looks like a line crossing
+    int lineWidth = lastBlackPixel - firstBlackPixel + 1;
+    int expectedMin = EXPECTED_LINE_WIDTH - LINE_WIDTH_THRESHOLD;
+    int expectedMax = EXPECTED_LINE_WIDTH + LINE_WIDTH_THRESHOLD;
     
-    // Validate detection (line should be at least 5 pixels wide)
-    if (leftEdge != -1 && rightEdge != -1 && (rightEdge - leftEdge) >= 5) {
-      totalLeftEdge += leftEdge;
-      totalRightEdge += rightEdge;
-      detectionCount++;
+    if (lineWidth >= expectedMin && lineWidth <= expectedMax) {
+      // Line width matches expected width - crossed by line
+      result.state = SCANLINE_CROSSED;
+      result.transitionStart = firstBlackPixel;
+      result.transitionEnd = lastBlackPixel;
+    } else {
+      // Black pixels present but doesn't match expected line width
+      result.state = SCANLINE_UNDEFINED;
+    }
+  } else {
+    result.state = SCANLINE_UNDEFINED;
+  }
+  
+  return result;
+}
+
+// New line detection using 4 scanning lines approach
+void detectLineCenterWithScanlines(uint8_t* grayscale_buf, size_t width, size_t height) {
+  // Reset detection values
+  lineCenterX = -1;
+  lineCenterTop = -1;
+  lineCenterMiddle = -1;
+  lineCenterBottom = -1;
+  
+  // Define 4 initial scanning lines with 5-pixel offset from edges
+  const int EDGE_OFFSET = 5;
+  int scanlines[4];
+  scanlines[0] = EDGE_OFFSET;                    // Top scanline
+  scanlines[1] = height / 3;                      // Upper-middle scanline
+  scanlines[2] = (2 * height) / 3;               // Lower-middle scanline
+  scanlines[3] = height - EDGE_OFFSET - 1;       // Bottom scanline
+  
+  // Analyze all 4 initial scanlines
+  ScanlineResult results[4];
+  for (int i = 0; i < 4; i++) {
+    results[i] = analyzeScanline(grayscale_buf, width, scanlines[i]);
+    
+    Serial.printf("Scanline %d (row %d): ", i, scanlines[i]);
+    switch (results[i].state) {
+      case SCANLINE_WHITE:
+        Serial.println("WHITE (no line)");
+        break;
+      case SCANLINE_BLACK:
+        Serial.println("BLACK (on line)");
+        break;
+      case SCANLINE_CROSSED:
+        Serial.printf("CROSSED (line at %d-%d, center=%d)\n", 
+                     results[i].transitionStart, results[i].transitionEnd,
+                     (results[i].transitionStart + results[i].transitionEnd) / 2);
+        break;
+      case SCANLINE_UNDEFINED:
+        Serial.printf("UNDEFINED (black pixels=%d)\n", results[i].blackPixelCount);
+        break;
     }
   }
   
-  // Calculate average center from all detections
-  if (detectionCount > 0) {
-    int avgLeftEdge = totalLeftEdge / detectionCount;
-    int avgRightEdge = totalRightEdge / detectionCount;
-    centerX = (avgLeftEdge + avgRightEdge) / 2;
-  } else {
-    centerX = -1;
+  // Binary search approach to find line position
+  // Strategy: Find the region where the line is located by analyzing scanline states
+  
+  // Case 1: Look for CROSSED scanlines (most reliable)
+  for (int i = 0; i < 4; i++) {
+    if (results[i].state == SCANLINE_CROSSED) {
+      int center = (results[i].transitionStart + results[i].transitionEnd) / 2;
+      
+      // Assign to appropriate region based on scanline position
+      if (i == 0) {
+        lineCenterTop = center;
+      } else if (i == 1 || i == 2) {
+        lineCenterMiddle = center;
+      } else {
+        lineCenterBottom = center;
+      }
+    }
   }
-}
-
-// Enhanced line detection with multi-region scanning for curves and turns
-void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
-  // Divide image into three regions: top (far), middle, and bottom (near)
-  // This allows detection of curves by comparing line position across regions
   
-  int topStart = height / 6;           // Top region: 1/6 to 1/3 of height (far ahead)
-  int topEnd = height / 3;
+  // Case 2: Use BLACK scanlines to narrow down search (binary search)
+  // If a scanline is completely BLACK, the line is wider than expected or we're on an intersection
+  int topBlackIdx = -1, bottomBlackIdx = -1;
+  for (int i = 0; i < 4; i++) {
+    if (results[i].state == SCANLINE_BLACK) {
+      if (topBlackIdx == -1) topBlackIdx = i;
+      bottomBlackIdx = i;
+    }
+  }
   
-  int middleStart = height / 3;        // Middle region: 1/3 to 2/3 of height
-  int middleEnd = (2 * height) / 3;
+  // If we have BLACK scanlines, do binary search between WHITE regions
+  if (topBlackIdx != -1 && bottomBlackIdx != -1) {
+    // Line is somewhere between these black regions
+    // For now, assume line is at the center of the black region
+    int searchStart = scanlines[topBlackIdx];
+    int searchEnd = scanlines[bottomBlackIdx];
+    int searchRow = (searchStart + searchEnd) / 2;
+    
+    // Scan this row to find line edges
+    ScanlineResult binaryResult = analyzeScanline(grayscale_buf, width, searchRow);
+    if (binaryResult.state == SCANLINE_CROSSED) {
+      int center = (binaryResult.transitionStart + binaryResult.transitionEnd) / 2;
+      lineCenterMiddle = center;
+    }
+  }
   
-  int bottomStart = (2 * height) / 3;  // Bottom region: 2/3 to 5/6 of height (close to robot)
-  int bottomEnd = (5 * height) / 6;
+  // Case 3: If we have WHITE and CROSSED combination, do refined search
+  // Look for transitions between WHITE and CROSSED scanlines
+  for (int i = 0; i < 3; i++) {
+    if (results[i].state == SCANLINE_WHITE && results[i+1].state == SCANLINE_CROSSED) {
+      // Line starts between these two scanlines
+      // Use the CROSSED scanline result
+      int center = (results[i+1].transitionStart + results[i+1].transitionEnd) / 2;
+      if (i == 0 || i == 1) {
+        if (lineCenterTop == -1) lineCenterTop = center;
+      } else {
+        if (lineCenterMiddle == -1) lineCenterMiddle = center;
+      }
+    } else if (results[i].state == SCANLINE_CROSSED && results[i+1].state == SCANLINE_WHITE) {
+      // Line ends between these two scanlines
+      int center = (results[i].transitionStart + results[i].transitionEnd) / 2;
+      if (i < 2) {
+        if (lineCenterMiddle == -1) lineCenterMiddle = center;
+      } else {
+        if (lineCenterBottom == -1) lineCenterBottom = center;
+      }
+    }
+  }
   
-  // Detect line in each region
-  detectLineCenterInRegion(grayscale_buf, width, height, topStart, topEnd, lineCenterTop);
-  detectLineCenterInRegion(grayscale_buf, width, height, middleStart, middleEnd, lineCenterMiddle);
-  detectLineCenterInRegion(grayscale_buf, width, height, bottomStart, bottomEnd, lineCenterBottom);
+  // Additional binary search iterations if needed
+  // If we haven't found the line yet, try intermediate scanlines
+  if (lineCenterBottom == -1 && lineCenterMiddle == -1 && lineCenterTop == -1) {
+    // No line detected in initial 4 scanlines, do more detailed search
+    for (int iter = 0; iter < 2; iter++) {
+      // Search between pairs of scanlines
+      for (int i = 0; i < 3; i++) {
+        int midRow = (scanlines[i] + scanlines[i+1]) / 2;
+        ScanlineResult midResult = analyzeScanline(grayscale_buf, width, midRow);
+        
+        if (midResult.state == SCANLINE_CROSSED) {
+          int center = (midResult.transitionStart + midResult.transitionEnd) / 2;
+          if (i == 0) {
+            lineCenterTop = center;
+          } else if (i == 1) {
+            lineCenterMiddle = center;
+          } else {
+            lineCenterBottom = center;
+          }
+          break; // Found line, stop searching
+        }
+      }
+      
+      // If we found something, stop
+      if (lineCenterBottom != -1 || lineCenterMiddle != -1 || lineCenterTop != -1) {
+        break;
+      }
+    }
+  }
   
-  // Use bottom region as primary detection (closest to robot, most reliable)
-  // Fall back to middle, then top if bottom is not detected
+  // Set primary detection (prefer bottom, then middle, then top)
   if (lineCenterBottom >= 0) {
     lineCenterX = lineCenterBottom;
   } else if (lineCenterMiddle >= 0) {
     lineCenterX = lineCenterMiddle;
   } else if (lineCenterTop >= 0) {
     lineCenterX = lineCenterTop;
-  } else {
-    lineCenterX = -1;
   }
   
   // Detect curves and turns based on multi-region data
@@ -347,6 +505,11 @@ void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
   } else {
     Serial.println("No line detected in any region");
   }
+}
+
+// Wrapper function for backward compatibility
+void detectLineCenter(uint8_t* grayscale_buf, size_t width, size_t height) {
+  detectLineCenterWithScanlines(grayscale_buf, width, height);
 }
 
 // Analyze line positions across regions to detect curves and calculate turn angle
@@ -530,11 +693,11 @@ String getMainPage() {
 <body>
     <div class="container">
         <div class="header">
-            <h1>⚫⚪ 1-Bit Line Detector</h1>
-            <p>ESP32-CAM Binary Line Tracking</p>
+            <h1>⚫⚪ 4-Line Scanner Detector</h1>
+            <p>ESP32-CAM Binary Line Tracking (96x96 Fast Mode)</p>
         </div>
         <div class="camera-view">
-            <canvas id="canvas" width="320" height="240"></canvas>
+            <canvas id="canvas" width="96" height="96"></canvas>
         </div>
         <div class="controls">
             <button onclick="calibrate()">🎯 КАЛИБРОВКА</button>
@@ -713,12 +876,34 @@ void setupRoutes() {
     // Detect line center
     detectLineCenter(fb->buf, fb->width, fb->height);
     
-    // Draw detection indicators for all three regions if detected
-    // Bottom region (close) - red/inverted line
+    // Visualize scanning lines (4 horizontal lines with 5-pixel offset)
+    const int EDGE_OFFSET = 5;
+    int scanlines[4];
+    scanlines[0] = EDGE_OFFSET;                    // Top scanline
+    scanlines[1] = fb->height / 3;                  // Upper-middle scanline
+    scanlines[2] = (2 * fb->height) / 3;           // Lower-middle scanline
+    scanlines[3] = fb->height - EDGE_OFFSET - 1;   // Bottom scanline
+    
+    // Draw scanning lines in inverted color
+    for (int i = 0; i < 4; i++) {
+      int row = scanlines[i];
+      if (row >= 0 && row < fb->height) {
+        for (int x = 0; x < fb->width; x++) {
+          int idx = row * fb->width + x;
+          // Invert every 3rd pixel to make a dotted line
+          if (x % 3 == 0) {
+            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
+          }
+        }
+      }
+    }
+    
+    // Draw detection indicators for detected line centers
+    // Bottom region (close) - vertical line in inverted color
     if (lineCenterBottom >= 0 && lineCenterBottom < fb->width) {
       int bottomRow = (2 * fb->height) / 3;
-      for (int y = bottomRow; y < (5 * fb->height) / 6; y++) {
-        for (int dx = -2; dx <= 2; dx++) {
+      for (int y = bottomRow; y < fb->height - EDGE_OFFSET; y++) {
+        for (int dx = -1; dx <= 1; dx++) {
           int x = lineCenterBottom + dx;
           if (x >= 0 && x < fb->width) {
             int idx = y * fb->width + x;
@@ -728,29 +913,24 @@ void setupRoutes() {
       }
     }
     
-    // Middle region - red/inverted line
+    // Middle region - vertical line in inverted color
     if (lineCenterMiddle >= 0 && lineCenterMiddle < fb->width) {
-      int middleRow = fb->height / 2;
       for (int y = fb->height / 3; y < (2 * fb->height) / 3; y++) {
-        for (int dx = -1; dx <= 1; dx++) {
-          int x = lineCenterMiddle + dx;
-          if (x >= 0 && x < fb->width) {
-            int idx = y * fb->width + x;
-            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
-          }
+        int x = lineCenterMiddle;
+        if (x >= 0 && x < fb->width) {
+          int idx = y * fb->width + x;
+          fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
         }
       }
     }
     
-    // Top region (far ahead) - red/inverted line
+    // Top region (far ahead) - vertical line in inverted color
     if (lineCenterTop >= 0 && lineCenterTop < fb->width) {
-      for (int y = fb->height / 6; y < fb->height / 3; y++) {
-        for (int dx = -1; dx <= 1; dx++) {
-          int x = lineCenterTop + dx;
-          if (x >= 0 && x < fb->width) {
-            int idx = y * fb->width + x;
-            fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
-          }
+      for (int y = EDGE_OFFSET; y < fb->height / 3; y++) {
+        int x = lineCenterTop;
+        if (x >= 0 && x < fb->width) {
+          int idx = y * fb->width + x;
+          fb->buf[idx] = (fb->buf[idx] == 0) ? 255 : 0;
         }
       }
     }
@@ -758,12 +938,12 @@ void setupRoutes() {
     // Draw connecting line between detected regions to visualize curve
     if (lineCenterBottom >= 0 && lineCenterTop >= 0) {
       // Simple line drawing between bottom and top
-      int startY = (5 * fb->height) / 6;
-      int endY = fb->height / 6;
+      int startY = fb->height - EDGE_OFFSET - 1;
+      int endY = EDGE_OFFSET;
       int startX = lineCenterBottom;
       int endX = lineCenterTop;
       
-      for (int y = endY; y < startY; y += 3) {
+      for (int y = endY; y < startY; y += 2) {
         float t = (float)(y - endY) / (startY - endY);
         int x = startX + (int)(t * (endX - startX));
         if (x >= 0 && x < fb->width && y >= 0 && y < fb->height) {
